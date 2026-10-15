@@ -1,7 +1,8 @@
 //! egui/eframe GUI control panel with live interactive remote feedback.
 
-use std::sync::mpsc::Sender;
-use eframe::egui::{self, Color32, Panel, Pos2, Rect, Stroke, Vec2};
+use std::collections::VecDeque;
+use std::sync::mpsc::{Receiver, Sender};
+use eframe::egui::{self, Color32, Panel, Pos2, Rect, Stroke, StrokeKind, Vec2};
 
 use crate::domain::action::{Action, MediaKey, VirtualKey};
 use crate::domain::button::Button;
@@ -14,12 +15,18 @@ use crate::presentation::tray::{SystemTray, TrayAction};
 pub struct DriverApp {
     config: Config,
     driver_cmd_tx: Sender<DriverCommand>,
+    telem_rx: Option<Receiver<DriverTelemetry>>,
     latest_telemetry: DriverTelemetry,
     selected_button: Button,
     texture: Option<egui::TextureHandle>,
     tray: Option<SystemTray>,
     save_status: Option<(String, std::time::Instant)>,
     active_tab: Tab,
+    gyro_history_x: VecDeque<f32>,
+    gyro_history_y: VecDeque<f32>,
+    accel_history_x: VecDeque<f32>,
+    accel_history_y: VecDeque<f32>,
+    accel_history_z: VecDeque<f32>,
 }
 
 impl std::fmt::Debug for DriverApp {
@@ -43,18 +50,37 @@ impl DriverApp {
         _cc: &eframe::CreationContext<'_>,
         config: Config,
         driver_cmd_tx: Sender<DriverCommand>,
+        telem_rx: Option<Receiver<DriverTelemetry>>,
     ) -> Self {
         let tray = SystemTray::new().ok();
 
         Self {
             config,
             driver_cmd_tx,
+            telem_rx,
             latest_telemetry: DriverTelemetry::default(),
             selected_button: Button::Ok,
             texture: None,
             tray,
             save_status: None,
             active_tab: Tab::Buttons,
+            gyro_history_x: VecDeque::with_capacity(120),
+            gyro_history_y: VecDeque::with_capacity(120),
+            accel_history_x: VecDeque::with_capacity(120),
+            accel_history_y: VecDeque::with_capacity(120),
+            accel_history_z: VecDeque::with_capacity(120),
+        }
+    }
+
+    pub fn poll_telemetry(&mut self) {
+        let mut batch = Vec::new();
+        if let Some(ref rx) = self.telem_rx {
+            while let Ok(telem) = rx.try_recv() {
+                batch.push(telem);
+            }
+        }
+        for telem in batch {
+            self.update_telemetry(telem);
         }
     }
 
@@ -77,6 +103,29 @@ impl DriverApp {
                 self.selected_button = b;
             }
         }
+
+        const MAX_HISTORY: usize = 100;
+        self.gyro_history_x.push_back(telem.gyro_x as f32);
+        if self.gyro_history_x.len() > MAX_HISTORY {
+            self.gyro_history_x.pop_front();
+        }
+        self.gyro_history_y.push_back(telem.gyro_y as f32);
+        if self.gyro_history_y.len() > MAX_HISTORY {
+            self.gyro_history_y.pop_front();
+        }
+        self.accel_history_x.push_back(telem.accel_x as f32);
+        if self.accel_history_x.len() > MAX_HISTORY {
+            self.accel_history_x.pop_front();
+        }
+        self.accel_history_y.push_back(telem.accel_y as f32);
+        if self.accel_history_y.len() > MAX_HISTORY {
+            self.accel_history_y.pop_front();
+        }
+        self.accel_history_z.push_back(telem.accel_z as f32);
+        if self.accel_history_z.len() > MAX_HISTORY {
+            self.accel_history_z.pop_front();
+        }
+
         self.latest_telemetry = telem;
     }
 
@@ -311,7 +360,7 @@ impl DriverApp {
                     ui.horizontal(|ui| {
                         ui.selectable_value(&mut self.active_tab, Tab::Buttons, "Mapeamento de Botões");
                         ui.selectable_value(&mut self.active_tab, Tab::Motion, "Movimento & Mira");
-                        ui.selectable_value(&mut self.active_tab, Tab::Sensors, "Sensores ao Vivo");
+                        ui.selectable_value(&mut self.active_tab, Tab::Sensors, "Dados Brutos");
                     });
                     ui.separator();
 
@@ -324,7 +373,10 @@ impl DriverApp {
             });
         });
 
-        if self.latest_telemetry.connected || !self.latest_telemetry.active_buttons.is_empty() {
+        if self.active_tab == Tab::Sensors {
+            // Em "Dados Brutos", força repaint contínuo a 60 FPS para atualizar sensores em tempo real
+            ctx.request_repaint();
+        } else if self.latest_telemetry.connected || !self.latest_telemetry.active_buttons.is_empty() {
             ctx.request_repaint_after(std::time::Duration::from_millis(30));
         }
     }
@@ -513,49 +565,277 @@ impl DriverApp {
     }
 
     fn render_sensors_tab(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Telemetria do Controle em Tempo Real");
-        ui.add_space(8.0);
+        ui.heading("Dados Brutos do Controle em Tempo Real");
+        ui.label(
+            egui::RichText::new("Leituras diretas dos conversores analógico-digitais (ADC) e sensores a ~111 Hz.")
+                .small()
+                .color(Color32::GRAY),
+        );
+        ui.add_space(6.0);
 
         let t = &self.latest_telemetry;
 
-        ui.group(|ui| {
-            ui.label(egui::RichText::new("Conexão & Frequência:").strong());
-            let mode_str = match &self.config.port_override {
-                Some(p) if !p.trim().is_empty() => format!("Manual ({p})"),
-                _ => "Automático (Auto-detectar receptor CP2102)".to_string(),
-            };
-            ui.label(format!("Modo de Porta: {mode_str}"));
-            ui.label(format!("Porta COM Ativa: {}", if t.port_name.is_empty() { "Nenhuma (Desconectado)" } else { &t.port_name }));
-            ui.label(format!("Frequência: {:.1} Hz (~9 ms/pacote)", t.rate_hz));
-            ui.label(format!("Mira Ativa: {}", if t.cursor_enabled { "Sim" } else { "Pausada" }));
-        });
+        egui::ScrollArea::vertical().auto_shrink([false; 2]).show(ui, |ui| {
+            // 1. Conexão & Telemetria
+            ui.group(|ui| {
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("Status da Conexão:").strong());
+                    if t.connected {
+                        ui.label(egui::RichText::new("CONECTADO").color(Color32::from_rgb(40, 220, 100)).strong());
+                    } else {
+                        ui.label(egui::RichText::new("DESCONECTADO").color(Color32::from_rgb(230, 60, 60)).strong());
+                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.label(egui::RichText::new(format!("{:.1} Hz (~{:.1} ms)", t.rate_hz, if t.rate_hz > 0.0 { 1000.0 / t.rate_hz } else { 0.0 })).strong());
+                    });
+                });
 
-        ui.add_space(6.0);
-        ui.group(|ui| {
-            ui.label(egui::RichText::new("Giroscópio (Movimento Angular):").strong());
-            ui.label(format!("X (Yaw):   {:4} (Delta: {:+4})", t.gyro_x, t.gyro_dx));
-            ui.label(format!("Y (Pitch): {:4} (Delta: {:+4})", t.gyro_y, t.gyro_dy));
-            ui.label(format!("Centro Calibrado: X={:.1}, Y={:.1}", t.center_x, t.center_y));
-        });
+                ui.horizontal(|ui| {
+                    let port_txt = if t.port_name.is_empty() { "Nenhuma" } else { &t.port_name };
+                    ui.label(format!("Porta COM: {port_txt}"));
+                    ui.separator();
+                    let cursor_status = if t.cursor_enabled { "Ativa" } else { "Pausada" };
+                    ui.label(format!("Mira: {cursor_status}"));
+                });
+            });
 
-        ui.add_space(6.0);
-        ui.group(|ui| {
-            ui.label(egui::RichText::new("Acelerômetro (Gravidade / Inclinação):").strong());
-            ui.label(format!("Accel X: {:4}", t.accel_x));
-            ui.label(format!("Accel Y: {:4}", t.accel_y));
-            ui.label(format!("Accel Z: {:4}", t.accel_z));
-        });
+            ui.add_space(6.0);
 
-        ui.add_space(6.0);
-        ui.group(|ui| {
-            ui.label(egui::RichText::new("Botões Ativos:").strong());
-            if t.active_buttons.is_empty() {
-                ui.label(egui::RichText::new("Nenhum botão pressionado").color(Color32::GRAY));
-            } else {
-                for b in t.active_buttons.iter() {
-                    ui.label(egui::RichText::new(format!("• {b:?} [Pressionado]")).color(Color32::from_rgb(0, 255, 180)).strong());
+            // 2. Giroscópio com Gráficos de Slide e Osciloscópio
+            ui.group(|ui| {
+                ui.label(egui::RichText::new("Giroscópio (Velocidade Angular):").strong());
+                ui.label(
+                    egui::RichText::new("O giroscópio mede rotação angular. Valores próximos ao centro (537) indicam repouso.")
+                        .small()
+                        .color(Color32::GRAY),
+                );
+                ui.add_space(4.0);
+
+                let delta_x_str = format!("Delta: {:+3}", t.gyro_dx);
+                draw_bipolar_slide(
+                    ui,
+                    "Eixo X (Yaw / Horizontal):",
+                    t.gyro_x as f32,
+                    t.center_x,
+                    350.0,
+                    750.0,
+                    &delta_x_str,
+                    Color32::from_rgb(0, 210, 255),
+                );
+
+                let delta_y_str = format!("Eixo Y (Pitch / Vertical):");
+                let delta_y_val = format!("Delta: {:+3}", t.gyro_dy);
+                draw_bipolar_slide(
+                    ui,
+                    &delta_y_str,
+                    t.gyro_y as f32,
+                    t.center_y,
+                    350.0,
+                    750.0,
+                    &delta_y_val,
+                    Color32::from_rgb(255, 195, 30),
+                );
+
+                ui.add_space(4.0);
+                draw_oscilloscope(
+                    ui,
+                    &self.gyro_history_x,
+                    &self.gyro_history_y,
+                    t.center_x,
+                    t.center_y,
+                );
+            });
+
+            ui.add_space(6.0);
+
+            // 3. Acelerômetro com Gráficos de Slide
+            ui.group(|ui| {
+                ui.label(egui::RichText::new("Acelerômetro (Gravidade & Inclinação 3D):").strong());
+                ui.label(
+                    egui::RichText::new("Mede os vetores de força G nos 3 eixos espaciais (ADC 12-bit, repouso ~2048).")
+                        .small()
+                        .color(Color32::GRAY),
+                );
+                ui.add_space(4.0);
+
+                let g_x = (t.accel_x as f32 - 2048.0) / 512.0;
+                let g_y = (t.accel_y as f32 - 2048.0) / 512.0;
+                let g_z = (t.accel_z as f32 - 2048.0) / 512.0;
+
+                draw_bipolar_slide(
+                    ui,
+                    "Aceleração X (Lateral):",
+                    t.accel_x as f32,
+                    2048.0,
+                    1000.0,
+                    3100.0,
+                    &format!("({:+.2}g)", g_x),
+                    Color32::from_rgb(244, 63, 94),
+                );
+
+                draw_bipolar_slide(
+                    ui,
+                    "Aceleração Y (Vertical):",
+                    t.accel_y as f32,
+                    2048.0,
+                    1000.0,
+                    3100.0,
+                    &format!("({:+.2}g)", g_y),
+                    Color32::from_rgb(34, 197, 94),
+                );
+
+                draw_bipolar_slide(
+                    ui,
+                    "Aceleração Z (Profundidade):",
+                    t.accel_z as f32,
+                    2048.0,
+                    1000.0,
+                    3100.0,
+                    &format!("({:+.2}g)", g_z),
+                    Color32::from_rgb(14, 165, 233),
+                );
+            });
+
+            ui.add_space(6.0);
+
+            // 4. Botões Físicos Pressionados
+            ui.group(|ui| {
+                ui.label(egui::RichText::new("Estado Físico dos Botões (Tempo Real):").strong());
+                if t.active_buttons.is_empty() {
+                    ui.label(egui::RichText::new("Nenhum botão pressionado no controle").color(Color32::GRAY));
+                } else {
+                    ui.horizontal_wrapped(|ui| {
+                        for b in t.active_buttons.iter() {
+                            ui.label(
+                                egui::RichText::new(format!("● {:?}", b))
+                                    .color(Color32::from_rgb(0, 255, 180))
+                                    .strong(),
+                            );
+                        }
+                    });
                 }
-            }
+            });
+            ui.add_space(8.0);
         });
+    }
+}
+
+fn draw_bipolar_slide(
+    ui: &mut egui::Ui,
+    label: &str,
+    val: f32,
+    center: f32,
+    min_range: f32,
+    max_range: f32,
+    extra_info: &str,
+    bar_color: Color32,
+) {
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new(label).strong());
+        if !extra_info.is_empty() {
+            ui.label(egui::RichText::new(extra_info).color(Color32::from_rgb(160, 170, 190)).small());
+        }
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.label(egui::RichText::new(format!("{:.0}", val)).strong().monospace());
+        });
+    });
+
+    let height = 15.0;
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), height), egui::Sense::hover());
+    let painter = ui.painter_at(rect);
+
+    // Track background
+    painter.rect_filled(rect, 3.0, Color32::from_rgb(24, 27, 34));
+    painter.rect_stroke(rect, 3.0, Stroke::new(1.0, Color32::from_rgb(42, 48, 60)), StrokeKind::Inside);
+
+    // Center marker
+    let norm_center = ((center - min_range) / (max_range - min_range)).clamp(0.0, 1.0);
+    let center_x = rect.min.x + rect.width() * norm_center;
+    painter.line_segment(
+        [Pos2::new(center_x, rect.min.y), Pos2::new(center_x, rect.max.y)],
+        Stroke::new(1.5, Color32::from_rgb(90, 105, 125)),
+    );
+
+    // Value bar
+    let clamped_val = val.clamp(min_range, max_range);
+    let norm_val = (clamped_val - min_range) / (max_range - min_range);
+    let val_x = rect.min.x + rect.width() * norm_val;
+
+    if (val_x - center_x).abs() > 1.0 {
+        let (x_start, x_end) = if val_x < center_x { (val_x, center_x) } else { (center_x, val_x) };
+        let bar_rect = Rect::from_min_max(Pos2::new(x_start, rect.min.y + 2.0), Pos2::new(x_end, rect.max.y - 2.0));
+        painter.rect_filled(bar_rect, 2.0, bar_color);
+    }
+
+    // Pin indicator
+    painter.line_segment(
+        [Pos2::new(val_x, rect.min.y - 1.0), Pos2::new(val_x, rect.max.y + 1.0)],
+        Stroke::new(2.5, Color32::WHITE),
+    );
+    ui.add_space(3.0);
+}
+
+fn draw_oscilloscope(
+    ui: &mut egui::Ui,
+    history_x: &VecDeque<f32>,
+    history_y: &VecDeque<f32>,
+    center_x: f32,
+    center_y: f32,
+) {
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new("Gráfico Osciloscópio (Tempo Real):").strong());
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.label(egui::RichText::new("— Giro Y (Pitch)").color(Color32::from_rgb(255, 195, 30)).small());
+            ui.add_space(8.0);
+            ui.label(egui::RichText::new("— Giro X (Yaw)").color(Color32::from_rgb(0, 210, 255)).small());
+        });
+    });
+
+    let height = 80.0;
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), height), egui::Sense::hover());
+    let painter = ui.painter_at(rect);
+
+    painter.rect_filled(rect, 4.0, Color32::from_rgb(14, 17, 23));
+    painter.rect_stroke(rect, 4.0, Stroke::new(1.0, Color32::from_rgb(38, 46, 62)), StrokeKind::Inside);
+
+    // Midline
+    let mid_y = rect.min.y + rect.height() * 0.5;
+    painter.line_segment(
+        [Pos2::new(rect.min.x, mid_y), Pos2::new(rect.max.x, mid_y)],
+        Stroke::new(1.0, Color32::from_rgb(30, 40, 56)),
+    );
+
+    let n = history_x.len();
+    if n >= 2 {
+        let span = 120.0f32; // +/- 120 counts from center
+        let step_x = rect.width() / (n - 1) as f32;
+
+        let points_x: Vec<Pos2> = history_x
+            .iter()
+            .enumerate()
+            .map(|(i, &v)| {
+                let px = rect.min.x + i as f32 * step_x;
+                let py = mid_y - ((v - center_x) / span) * (rect.height() * 0.44);
+                Pos2::new(px, py.clamp(rect.min.y + 2.0, rect.max.y - 2.0))
+            })
+            .collect();
+
+        for w in points_x.windows(2) {
+            painter.line_segment([w[0], w[1]], Stroke::new(1.8, Color32::from_rgb(0, 210, 255)));
+        }
+
+        let points_y: Vec<Pos2> = history_y
+            .iter()
+            .enumerate()
+            .map(|(i, &v)| {
+                let px = rect.min.x + i as f32 * step_x;
+                let py = mid_y - ((v - center_y) / span) * (rect.height() * 0.44);
+                Pos2::new(px, py.clamp(rect.min.y + 2.0, rect.max.y - 2.0))
+            })
+            .collect();
+
+        for w in points_y.windows(2) {
+            painter.line_segment([w[0], w[1]], Stroke::new(1.8, Color32::from_rgb(255, 195, 30)));
+        }
     }
 }

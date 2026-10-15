@@ -141,6 +141,9 @@ fn run_driver_loop(
     let mut current_fps = 0.0f32;
     let mut last_telem_send = Instant::now();
     let mut last_reconnect_attempt = Instant::now() - Duration::from_secs(5);
+    let mut last_valid_frame: Option<Frame> = None;
+    let mut last_dx: i32 = 0;
+    let mut last_dy: i32 = 0;
 
     while is_running.load(Ordering::Relaxed) {
         // 1. Process commands from UI / Tray
@@ -200,6 +203,9 @@ fn run_driver_loop(
             }
 
             if port_stream.is_none() {
+                last_valid_frame = None;
+                last_dx = 0;
+                last_dy = 0;
                 // Send disconnected telemetry at ~5 Hz
                 if last_telem_send.elapsed() >= Duration::from_millis(200) {
                     let _ = telem_tx.send(DriverTelemetry {
@@ -238,18 +244,14 @@ fn run_driver_loop(
         }
 
         // 4. Process all complete frames received
-        let mut latest_frame: Option<Frame> = None;
-        let mut latest_dx = 0;
-        let mut latest_dy = 0;
-
         while let Some(frame) = decoder.next_frame() {
             fps_count += 1;
-            latest_frame = Some(frame);
+            last_valid_frame = Some(frame);
 
             // A. Motion processing (sub-pixel mouse movement)
             let (dx, dy) = processor.process(frame.gyro_x, frame.gyro_y);
-            latest_dx = dx;
-            latest_dy = dy;
+            last_dx = dx;
+            last_dy = dy;
             if dx != 0 || dy != 0 {
                 send_mouse_move(dx, dy);
             }
@@ -290,10 +292,10 @@ fn run_driver_loop(
             fps_timer = Instant::now();
         }
 
-        // 6. Send telemetry to UI at ~30 Hz (or immediately if buttons change)
-        if last_telem_send.elapsed() >= Duration::from_millis(33) || !active_buttons.is_empty() {
+        // 6. Send telemetry to UI at ~60 Hz (every 16 ms) or immediately if buttons change
+        if last_telem_send.elapsed() >= Duration::from_millis(16) || !active_buttons.is_empty() {
             last_telem_send = Instant::now();
-            let (gx, gy, ax, ay, az) = if let Some(ref f) = latest_frame {
+            let (gx, gy, ax, ay, az) = if let Some(ref f) = last_valid_frame {
                 (f.gyro_x, f.gyro_y, f.accel[0], f.accel[1], f.accel[2])
             } else {
                 (537, 537, 2048, 2048, 2048)
@@ -305,8 +307,8 @@ fn run_driver_loop(
                 rate_hz: current_fps,
                 gyro_x: gx,
                 gyro_y: gy,
-                gyro_dx: latest_dx,
-                gyro_dy: latest_dy,
+                gyro_dx: last_dx,
+                gyro_dy: last_dy,
                 accel_x: ax,
                 accel_y: ay,
                 accel_z: az,

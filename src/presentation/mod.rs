@@ -7,7 +7,7 @@ pub mod view;
 use eframe::egui::{self, ViewportBuilder};
 
 use crate::domain::config::Config;
-use crate::infra::driver::{DriverHandle, DriverTelemetry};
+use crate::infra::driver::DriverHandle;
 use view::DriverApp;
 
 pub fn run_gui_app(
@@ -33,22 +33,7 @@ pub fn run_gui_app(
             // Dark visuals
             cc.egui_ctx.set_visuals(egui::Visuals::dark());
 
-            let app = DriverApp::new(cc, config, cmd_tx);
-
-            if let Some(rx) = telem_rx {
-                let ctx = cc.egui_ctx.clone();
-                std::thread::Builder::new()
-                    .name("telem-forwarder".to_string())
-                    .spawn(move || {
-                        while let Ok(telem) = rx.recv() {
-                            ctx.request_repaint();
-                            ctx.data_mut(|d| {
-                                d.insert_temp(egui::Id::new("latest_telemetry"), telem);
-                            });
-                        }
-                    })
-                    .expect("spawn telem forwarder");
-            }
+            let app = DriverApp::new(cc, config, cmd_tx, telem_rx);
 
             Ok(Box::new(AppWrapper { app }))
         }),
@@ -64,14 +49,7 @@ struct AppWrapper {
 
 impl eframe::App for AppWrapper {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        let latest_telem: Option<DriverTelemetry> = ui.ctx().data_mut(|d| {
-            d.get_temp(egui::Id::new("latest_telemetry"))
-        });
-
-        if let Some(telem) = latest_telem {
-            self.app.update_telemetry(telem);
-        }
-
+        self.app.poll_telemetry();
         self.app.render(ui);
     }
 }
