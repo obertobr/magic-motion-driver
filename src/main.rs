@@ -1,5 +1,7 @@
 //! Application entry point for LG Magic Motion user-mode driver.
 
+#![windows_subsystem = "windows"]
+
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
@@ -16,6 +18,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = Config::load_or_default();
 
     if headless {
+        #[cfg(windows)]
+        unsafe {
+            use windows_sys::Win32::System::Console::{AttachConsole, ATTACH_PARENT_PROCESS};
+            let _ = AttachConsole(ATTACH_PARENT_PROCESS);
+        }
         println!("LG Magic Motion Driver iniciando em modo headless (sem interface gráfica)...");
         let mut driver = DriverHandle::start(config);
 
