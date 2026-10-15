@@ -170,11 +170,6 @@ impl DriverApp {
                     self.save_config();
                 }
 
-                if ui.button("Restaurar Padrões").clicked() {
-                    self.config = Config::default();
-                    self.save_config();
-                }
-
                 if let Some((ref msg, time)) = self.save_status {
                     if time.elapsed() < std::time::Duration::from_secs(4) {
                         ui.label(egui::RichText::new(msg).color(Color32::from_rgb(100, 220, 140)));
@@ -193,70 +188,120 @@ impl DriverApp {
             ui.horizontal(|ui| {
                 // Left: Remote Image with interactive hotspots
                 ui.vertical(|ui| {
-                    ui.set_width(170.0);
-                    ui.label(egui::RichText::new("Controle Físico").strong());
-                    ui.label(egui::RichText::new("Aperte um botão ou clique").small().color(Color32::GRAY));
-                    ui.add_space(4.0);
+                    ui.set_width(200.0);
+                    ui.vertical_centered(|ui| {
+                        ui.label(egui::RichText::new("Controle Físico").strong());
+                        ui.label(egui::RichText::new("Passe o mouse ou clique no botão").small().color(Color32::GRAY));
+                        ui.add_space(6.0);
 
-                    if let Some(ref tex) = self.texture {
-                        let display_h = 560.0f32;
-                        let display_w = display_h * (REMOTE_IMG_WIDTH / REMOTE_IMG_HEIGHT);
-                        let (rect, resp) = ui.allocate_exact_size(Vec2::new(display_w, display_h), egui::Sense::click());
+                        if let Some(ref tex) = self.texture {
+                            let display_h = 560.0f32;
+                            let display_w = display_h * (REMOTE_IMG_WIDTH / REMOTE_IMG_HEIGHT);
+                            let avail_w = ui.available_width();
+                            let offset_x = ((avail_w - display_w) / 2.0).max(0.0);
 
-                        let painter = ui.painter_at(rect);
-                        painter.image(
-                            tex.id(),
-                            rect,
-                            Rect::from_min_max(Pos2::new(0.0, 0.0), Pos2::new(1.0, 1.0)),
-                            Color32::WHITE,
-                        );
+                            let (full_rect, resp) = ui.allocate_exact_size(
+                                Vec2::new(avail_w, display_h),
+                                egui::Sense::click_and_drag(),
+                            );
 
-                        let scale_x = display_w / REMOTE_IMG_WIDTH;
-                        let scale_y = display_h / REMOTE_IMG_HEIGHT;
+                            let img_rect = Rect::from_min_size(
+                                Pos2::new(full_rect.min.x + offset_x, full_rect.min.y),
+                                Vec2::new(display_w, display_h),
+                            );
 
-                        if resp.clicked() {
-                            if let Some(pos) = resp.interact_pointer_pos() {
-                                let norm_x = (pos.x - rect.min.x) / display_w;
-                                let norm_y = (pos.y - rect.min.y) / display_h;
-                                if let Some(btn) = find_hotspot_at(norm_x, norm_y) {
-                                    if btn.is_mappable() {
-                                        self.selected_button = btn;
+                            let painter = ui.painter_at(full_rect);
+                            painter.image(
+                                tex.id(),
+                                img_rect,
+                                Rect::from_min_max(Pos2::new(0.0, 0.0), Pos2::new(1.0, 1.0)),
+                                Color32::WHITE,
+                            );
+
+                            let scale_x = display_w / REMOTE_IMG_WIDTH;
+                            let scale_y = display_h / REMOTE_IMG_HEIGHT;
+
+                            let hover_pos = resp.hover_pos();
+                            let hovered_button = hover_pos.and_then(|pos| {
+                                if img_rect.contains(pos) {
+                                    let norm_x = (pos.x - img_rect.min.x) / display_w;
+                                    let norm_y = (pos.y - img_rect.min.y) / display_h;
+                                    find_hotspot_at(norm_x, norm_y)
+                                } else {
+                                    None
+                                }
+                            });
+
+                            if hovered_button.is_some() {
+                                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                            }
+
+                            if resp.clicked() {
+                                if let Some(pos) = resp.interact_pointer_pos() {
+                                    if img_rect.contains(pos) {
+                                        let norm_x = (pos.x - img_rect.min.x) / display_w;
+                                        let norm_y = (pos.y - img_rect.min.y) / display_h;
+                                        if let Some(btn) = find_hotspot_at(norm_x, norm_y) {
+                                            if btn.is_mappable() {
+                                                self.selected_button = btn;
+                                                self.active_tab = Tab::Buttons;
+                                            }
+                                        }
                                     }
                                 }
                             }
-                        }
 
-                        for spot in &BUTTON_HOTSPOTS {
-                            let center = Pos2::new(
-                                rect.min.x + spot.cx * scale_x,
-                                rect.min.y + spot.cy * scale_y,
-                            );
-                            let radius = spot.radius * scale_x;
+                            for spot in &BUTTON_HOTSPOTS {
+                                let center = Pos2::new(
+                                    img_rect.min.x + spot.cx * scale_x,
+                                    img_rect.min.y + spot.cy * scale_y,
+                                );
+                                let radius = spot.radius * scale_x;
 
-                            let is_active = self.latest_telemetry.active_buttons.contains(spot.button);
-                            let is_selected = self.selected_button == spot.button;
+                                let is_active = self.latest_telemetry.active_buttons.contains(spot.button);
+                                let is_selected = self.selected_button == spot.button;
+                                let is_hovered = hovered_button == Some(spot.button);
 
-                            if is_active {
-                                // Live animated pulse when pressed physically!
-                                painter.circle_filled(
-                                    center,
-                                    radius + 6.0,
-                                    Color32::from_rgba_unmultiplied(0, 240, 180, 160),
-                                );
-                                painter.circle_stroke(
-                                    center,
-                                    radius + 8.0,
-                                    Stroke::new(2.5, Color32::from_rgb(0, 255, 200)),
-                                );
-                            } else if is_selected {
-                                painter.circle_stroke(
-                                    center,
-                                    radius + 4.0,
-                                    Stroke::new(2.0, Color32::from_rgb(250, 190, 40)),
-                                );
+                                if is_active {
+                                    // Live animated pulse when pressed physically on the remote!
+                                    painter.circle_filled(
+                                        center,
+                                        radius + 6.0,
+                                        Color32::from_rgba_unmultiplied(0, 240, 180, 160),
+                                    );
+                                    painter.circle_stroke(
+                                        center,
+                                        radius + 8.0,
+                                        Stroke::new(2.5, Color32::from_rgb(0, 255, 200)),
+                                    );
+                                } else if is_hovered {
+                                    // Contorno amarelo ao passar o mouse em cima do botão
+                                    painter.circle_filled(
+                                        center,
+                                        radius + 4.0,
+                                        Color32::from_rgba_unmultiplied(250, 215, 20, 50),
+                                    );
+                                    painter.circle_stroke(
+                                        center,
+                                        radius + 4.0,
+                                        Stroke::new(2.5, Color32::from_rgb(250, 215, 20)),
+                                    );
+                                } else if is_selected {
+                                    // Destaque do botão selecionado atualmente para configuração
+                                    painter.circle_filled(
+                                        center,
+                                        radius + 4.0,
+                                        Color32::from_rgba_unmultiplied(60, 160, 255, 45),
+                                    );
+                                    painter.circle_stroke(
+                                        center,
+                                        radius + 4.0,
+                                        Stroke::new(2.0, Color32::from_rgb(80, 180, 255)),
+                                    );
+                                }
                             }
                         }
-                    }
+                    });
                 });
 
                 ui.separator();
@@ -349,7 +394,15 @@ impl DriverApp {
         }
 
         ui.add_space(10.0);
-        ui.label(egui::RichText::new("Resumo de Mapeamentos:").strong());
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("Resumo de Mapeamentos:").strong());
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.button("Restaurar Botões Padrão").clicked() {
+                    self.config.button_mappings = Config::default().button_mappings;
+                    self.save_config();
+                }
+            });
+        });
         egui::Grid::new("mapping_summary").striped(true).show(ui, |ui| {
             ui.label("Botão");
             ui.label("Ação Atual");
@@ -400,6 +453,12 @@ impl DriverApp {
             if ui.checkbox(&mut autostart, "Iniciar junto com o Windows").changed() {
                 let _ = set_autostart(autostart);
                 self.config.auto_start = autostart;
+                self.save_config();
+            }
+
+            ui.add_space(6.0);
+            if ui.button("Restaurar Padrões de Fábrica").clicked() {
+                self.config = Config::default();
                 self.save_config();
             }
         });
