@@ -61,6 +61,7 @@ pub struct Config {
     pub button_mappings: BTreeMap<Button, Action>,
     pub port_override: Option<String>,
     pub auto_start: bool,
+    pub target_monitor: Option<usize>,
 }
 
 impl Default for Config {
@@ -84,6 +85,7 @@ impl Default for Config {
             button_mappings,
             port_override: None,
             auto_start: false,
+            target_monitor: None,
         }
     }
 }
@@ -160,5 +162,14 @@ mod tests {
         let mut cfg = Config::default();
         cfg.set_action(Button::Power, Action::MouseLeft);
         assert_eq!(cfg.get_action(Button::Power), Action::None);
+    }
+
+    #[test]
+    fn config_persists_target_monitor() {
+        let mut cfg = Config::default();
+        cfg.target_monitor = Some(2);
+        let s = toml::to_string_pretty(&cfg).expect("serialize config with monitor");
+        let parsed: Config = toml::from_str(&s).expect("deserialize config with monitor");
+        assert_eq!(parsed.target_monitor, Some(2));
     }
 }

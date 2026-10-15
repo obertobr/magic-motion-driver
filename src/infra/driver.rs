@@ -14,7 +14,7 @@ use crate::domain::button::{decode_button_code, ButtonSet};
 use crate::domain::config::Config;
 use crate::domain::motion::{MotionProcessor, MotionSettings};
 use crate::domain::protocol::{Frame, FrameDecoder};
-use crate::infra::input::{execute_action_press, execute_action_release, send_mouse_move};
+use crate::infra::input::{execute_action_press, execute_action_release, send_mouse_move_clamped};
 use crate::infra::serial::{find_receiver_port, open_port};
 
 /// Real-time telemetry sent from driver thread to UI.
@@ -122,6 +122,12 @@ impl Drop for DriverHandle {
     }
 }
 
+fn resolve_monitor_rect(target: Option<usize>) -> Option<[i32; 4]> {
+    let target = target?;
+    let monitors = crate::infra::input::list_monitors();
+    monitors.into_iter().find(|m| m.id == target).map(|m| m.rect)
+}
+
 fn run_driver_loop(
     mut config: Config,
     cmd_rx: Receiver<DriverCommand>,
@@ -131,6 +137,7 @@ fn run_driver_loop(
     let mut processor = MotionProcessor::new(MotionSettings::from(&config.motion));
     let mut decoder = FrameDecoder::new();
     let mut active_buttons = ButtonSet::EMPTY;
+    let mut clamp_rect = resolve_monitor_rect(config.target_monitor);
 
     let mut port_name: Option<String> = None;
     let mut port_stream: Option<Box<dyn serialport::SerialPort>> = None;
@@ -151,6 +158,7 @@ fn run_driver_loop(
             match cmd_rx.try_recv() {
                 Ok(DriverCommand::UpdateConfig(new_cfg)) => {
                     let port_changed = new_cfg.port_override != config.port_override;
+                    clamp_rect = resolve_monitor_rect(new_cfg.target_monitor);
                     processor.set_settings(MotionSettings::from(&new_cfg.motion));
                     config = new_cfg;
                     if port_changed {
@@ -253,7 +261,7 @@ fn run_driver_loop(
             last_dx = dx;
             last_dy = dy;
             if dx != 0 || dy != 0 {
-                send_mouse_move(dx, dy);
+                send_mouse_move_clamped(dx, dy, clamp_rect);
             }
 
             // B. Button states & transitions

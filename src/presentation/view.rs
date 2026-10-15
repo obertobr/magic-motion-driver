@@ -22,6 +22,7 @@ pub struct DriverApp {
     tray: Option<SystemTray>,
     save_status: Option<(String, std::time::Instant)>,
     active_tab: Tab,
+    pub should_exit: bool,
     gyro_history_x: VecDeque<f32>,
     gyro_history_y: VecDeque<f32>,
     accel_history_x: VecDeque<f32>,
@@ -34,6 +35,7 @@ impl std::fmt::Debug for DriverApp {
         f.debug_struct("DriverApp")
             .field("config", &self.config)
             .field("selected_button", &self.selected_button)
+            .field("should_exit", &self.should_exit)
             .finish()
     }
 }
@@ -64,6 +66,7 @@ impl DriverApp {
             tray,
             save_status: None,
             active_tab: Tab::Buttons,
+            should_exit: false,
             gyro_history_x: VecDeque::with_capacity(120),
             gyro_history_y: VecDeque::with_capacity(120),
             accel_history_x: VecDeque::with_capacity(120),
@@ -142,14 +145,16 @@ impl DriverApp {
         let ctx = ui.ctx().clone();
         self.ensure_texture(&ctx);
 
-        // Process System Tray events
-        if let Some(ref tray) = self.tray {
+        // Process System Tray events & live connection status
+        if let Some(ref mut tray) = self.tray {
+            tray.update_status(self.latest_telemetry.connected, &self.latest_telemetry.port_name);
             match tray.process_events(&self.driver_cmd_tx) {
                 Some(TrayAction::OpenPanel) => {
                     ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
                     ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
                 }
                 Some(TrayAction::Quit) => {
+                    self.should_exit = true;
                     let _ = self.driver_cmd_tx.send(DriverCommand::Stop);
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 }
@@ -157,10 +162,12 @@ impl DriverApp {
             }
         }
 
-        // Intercept close button to hide to tray
+        // Intercept close button to hide to tray (unless user clicked Sair)
         if ctx.input(|i| i.viewport().close_requested()) {
-            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+            if !self.should_exit {
+                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+            }
         }
 
         // Top Header Panel
@@ -378,6 +385,9 @@ impl DriverApp {
             ctx.request_repaint();
         } else if self.latest_telemetry.connected || !self.latest_telemetry.active_buttons.is_empty() {
             ctx.request_repaint_after(std::time::Duration::from_millis(30));
+        } else {
+            // Mantém polling do tray e status de conexão ativo mesmo com janela oculta
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }
     }
 }
@@ -501,6 +511,38 @@ impl DriverApp {
             changed |= ui.checkbox(&mut self.config.motion.invert_x, "Inverter Eixo X (Horizontal)").changed();
             changed |= ui.checkbox(&mut self.config.motion.invert_y, "Inverter Eixo Y (Vertical)").changed();
 
+            ui.add_space(4.0);
+            ui.label("Restringir Cursor a um Monitor:");
+            let monitors = crate::infra::input::list_monitors();
+            let current_monitor_label = match self.config.target_monitor {
+                Some(id) => {
+                    if let Some(m) = monitors.iter().find(|m| m.id == id) {
+                        format!("{} ({}x{})", m.name, m.rect[2] - m.rect[0], m.rect[3] - m.rect[1])
+                    } else {
+                        format!("Monitor {id}")
+                    }
+                }
+                None => "Todos os Monitores (Livre)".to_string(),
+            };
+
+            egui::ComboBox::from_id_salt("monitor_selector")
+                .selected_text(&current_monitor_label)
+                .show_ui(ui, |ui| {
+                    if ui.selectable_label(self.config.target_monitor.is_none(), "Todos os Monitores (Livre)").clicked() && self.config.target_monitor.is_some() {
+                        self.config.target_monitor = None;
+                        changed = true;
+                    }
+                    for m in &monitors {
+                        let is_selected = self.config.target_monitor == Some(m.id);
+                        let label = format!("{} ({}x{})", m.name, m.rect[2] - m.rect[0], m.rect[3] - m.rect[1]);
+                        if ui.selectable_label(is_selected, label).clicked() && !is_selected {
+                            self.config.target_monitor = Some(m.id);
+                            changed = true;
+                        }
+                    }
+                });
+
+            ui.add_space(4.0);
             let mut autostart = is_autostart_enabled();
             if ui.checkbox(&mut autostart, "Iniciar junto com o Windows").changed() {
                 let _ = set_autostart(autostart);
