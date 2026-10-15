@@ -381,7 +381,8 @@ impl DriverApp {
         ui.add_space(8.0);
         ui.group(|ui| {
             ui.label(egui::RichText::new("Opções do Sistema:").strong());
-            changed |= ui.checkbox(&mut self.config.motion.invert_y, "Inverter Eixo Y (Pitch)").changed();
+            changed |= ui.checkbox(&mut self.config.motion.invert_x, "Inverter Eixo X (Horizontal)").changed();
+            changed |= ui.checkbox(&mut self.config.motion.invert_y, "Inverter Eixo Y (Vertical)").changed();
 
             let mut autostart = is_autostart_enabled();
             if ui.checkbox(&mut autostart, "Iniciar junto com o Windows").changed() {

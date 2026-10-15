@@ -18,6 +18,7 @@ pub struct MotionConfig {
     pub deadzone: f32,
     pub acceleration: f32,
     pub smoothing: f32,
+    pub invert_x: bool,
     pub invert_y: bool,
 }
 
@@ -31,6 +32,7 @@ impl Default for MotionConfig {
             deadzone: s.deadzone,
             acceleration: s.acceleration,
             smoothing: s.smoothing,
+            invert_x: s.invert_x,
             invert_y: s.invert_y,
         }
     }
@@ -45,6 +47,7 @@ impl From<&MotionConfig> for MotionSettings {
             deadzone: c.deadzone,
             acceleration: c.acceleration,
             smoothing: c.smoothing,
+            invert_x: c.invert_x,
             invert_y: c.invert_y,
         }
     }

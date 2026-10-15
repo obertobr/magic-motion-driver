@@ -24,6 +24,8 @@ pub struct MotionSettings {
     pub acceleration: f32,
     /// Smoothing factor in [0.0, 1.0) (0.0 = raw response, 0.3 = smooth).
     pub smoothing: f32,
+    /// Invert horizontal axis.
+    pub invert_x: bool,
     /// Invert vertical axis.
     pub invert_y: bool,
 }
@@ -37,6 +39,7 @@ impl Default for MotionSettings {
             deadzone: 1.5,
             acceleration: 1.15,
             smoothing: 0.25,
+            invert_x: false,
             invert_y: false,
         }
     }
@@ -132,10 +135,14 @@ impl MotionProcessor {
             return (0, 0);
         }
 
-        // 1. Raw delta from calibrated center
-        let mut raw_dx = raw_gyro_x as f32 - self.center_x;
-        let mut raw_dy = raw_gyro_y as f32 - self.center_y;
+        // 1. Raw delta from calibrated center.
+        // Base sign: (center - raw) produces intuitive direction for the LG Hillcrest gyro.
+        let mut raw_dx = self.center_x - raw_gyro_x as f32;
+        let mut raw_dy = self.center_y - raw_gyro_y as f32;
 
+        if self.settings.invert_x {
+            raw_dx = -raw_dx;
+        }
         if self.settings.invert_y {
             raw_dy = -raw_dy;
         }
@@ -234,13 +241,13 @@ mod tests {
         let mut proc = MotionProcessor::new(settings);
         proc.set_center(500.0, 500.0);
 
-        // Delta = 1 raw unit -> 0.4 px per frame
+        // Base delta: center (500) - raw (499) = +1 unit -> 0.4 px per frame
         // Frame 1: 0.4 accum -> 0 out
         // Frame 2: 0.8 accum -> 0 out
         // Frame 3: 1.2 accum -> 1 out, 0.2 remaining
-        let r1 = proc.process(501, 500);
-        let r2 = proc.process(501, 500);
-        let r3 = proc.process(501, 500);
+        let r1 = proc.process(499, 500);
+        let r2 = proc.process(499, 500);
+        let r3 = proc.process(499, 500);
 
         assert_eq!(r1, (0, 0));
         assert_eq!(r2, (0, 0));
@@ -259,8 +266,26 @@ mod tests {
         let mut proc = MotionProcessor::new(settings);
         proc.set_center(500.0, 500.0);
 
-        let (_, dy) = proc.process(500, 510);
-        assert!(dy < 0, "inverted Y should be negative for positive raw delta");
+        // Raw 490 -> base dy = 500 - 490 = +10. With invert_y = true -> dy = -10.
+        let (_, dy) = proc.process(500, 490);
+        assert!(dy < 0, "inverted Y should be negative for positive base delta");
+    }
+
+    #[test]
+    fn invert_x_reverses_horizontal() {
+        let mut settings = MotionSettings::default();
+        settings.deadzone = 0.0;
+        settings.smoothing = 0.0;
+        settings.acceleration = 1.0;
+        settings.sensitivity = 1.0;
+        settings.invert_x = true;
+
+        let mut proc = MotionProcessor::new(settings);
+        proc.set_center(500.0, 500.0);
+
+        // Raw 490 -> base dx = 500 - 490 = +10. With invert_x = true -> dx = -10.
+        let (dx, _) = proc.process(490, 500);
+        assert!(dx < 0, "inverted X should be negative for positive base delta");
     }
 
     #[test]
