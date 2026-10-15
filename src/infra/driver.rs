@@ -34,6 +34,7 @@ pub struct DriverTelemetry {
     pub cursor_enabled: bool,
     pub center_x: f32,
     pub center_y: f32,
+    pub roll_deg: f32,
 }
 
 impl Default for DriverTelemetry {
@@ -53,6 +54,7 @@ impl Default for DriverTelemetry {
             cursor_enabled: true,
             center_x: 537.0,
             center_y: 537.0,
+            roll_deg: 0.0,
         }
     }
 }
@@ -265,8 +267,8 @@ fn run_driver_loop(
             fps_count += 1;
             last_valid_frame = Some(frame);
 
-            // A. Motion processing (sub-pixel mouse movement)
-            let (dx, dy) = processor.process(frame.gyro_x, frame.gyro_y);
+            // A. Motion processing (gravity-aware roll compensated sub-pixel mouse movement)
+            let (dx, dy) = processor.process_with_accel(frame.gyro_x, frame.gyro_y, frame.accel);
             last_dx = dx;
             last_dy = dy;
             if dx != 0 || dy != 0 {
@@ -333,6 +335,7 @@ fn run_driver_loop(
                 cursor_enabled: processor.is_cursor_enabled(),
                 center_x: processor.center_x,
                 center_y: processor.center_y,
+                roll_deg: processor.current_roll_deg(),
             });
         }
 

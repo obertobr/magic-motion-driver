@@ -28,6 +28,8 @@ pub struct MotionSettings {
     pub invert_x: bool,
     /// Invert vertical axis.
     pub invert_y: bool,
+    /// Gravity-aware roll compensation (up is always up regardless of remote tilt).
+    pub roll_compensation: bool,
 }
 
 impl Default for MotionSettings {
@@ -41,6 +43,7 @@ impl Default for MotionSettings {
             smoothing: 0.25,
             invert_x: false,
             invert_y: false,
+            roll_compensation: true,
         }
     }
 }
@@ -54,6 +57,8 @@ pub struct MotionProcessor {
     accum_y: f32,
     smooth_x: f32,
     smooth_y: f32,
+    grav_norm: f32,
+    grav_lat: f32,
     settings: MotionSettings,
     cursor_enabled: bool,
 }
@@ -75,6 +80,8 @@ impl MotionProcessor {
             accum_y: 0.0,
             smooth_x: 0.0,
             smooth_y: 0.0,
+            grav_norm: -950.0,
+            grav_lat: 0.0,
             settings,
             cursor_enabled: true,
         }
@@ -128,9 +135,13 @@ impl MotionProcessor {
         self.set_center((sum_x / len) as f32, (sum_y / len) as f32);
     }
 
-    /// Processes one gyro reading (raw ADC values) and produces an integer
-    /// relative mouse delta (dx, dy) for `SendInput`.
-    pub fn process(&mut self, raw_gyro_x: u16, raw_gyro_y: u16) -> (i32, i32) {
+    /// Processes one gyro reading with gravity-aware roll compensation from the accelerometer.
+    pub fn process_with_accel(
+        &mut self,
+        raw_gyro_x: u16,
+        raw_gyro_y: u16,
+        accel: [u16; 3],
+    ) -> (i32, i32) {
         if !self.cursor_enabled {
             return (0, 0);
         }
@@ -161,6 +172,31 @@ impl MotionProcessor {
             raw_dy -= raw_dy.signum() * dz;
         }
 
+        // 3. Roll (gravity) compensation:
+        // Transverse accelerometer plane:
+        // accel[0] = normal axis (~1050 flat face-up, center 2048)
+        // accel[1] = lateral axis (~2048 flat, center 2048)
+        let raw_norm = (accel[0] as f32) - 2048.0;
+        let raw_lat = (accel[1] as f32) - 2048.0;
+
+        // Exponential moving average to filter out rapid hand tremors from gravity estimation
+        self.grav_norm = self.grav_norm * 0.88 + raw_norm * 0.12;
+        self.grav_lat = self.grav_lat * 0.88 + raw_lat * 0.12;
+
+        if self.settings.roll_compensation && (raw_dx != 0.0 || raw_dy != 0.0) {
+            let len = (self.grav_lat * self.grav_lat + self.grav_norm * self.grav_norm).sqrt();
+            if len > 150.0 {
+                let cos_phi = -self.grav_norm / len;
+                let sin_phi = self.grav_lat / len;
+
+                let rot_dx = raw_dx * cos_phi - raw_dy * sin_phi;
+                let rot_dy = raw_dx * sin_phi + raw_dy * cos_phi;
+
+                raw_dx = rot_dx;
+                raw_dy = rot_dy;
+            }
+        }
+
         if raw_dx == 0.0 && raw_dy == 0.0 {
             // Decay smoothing towards zero at rest
             self.smooth_x *= 0.5;
@@ -168,12 +204,12 @@ impl MotionProcessor {
             return (0, 0);
         }
 
-        // 3. Low-pass filter (smoothing)
+        // 4. Low-pass filter (smoothing)
         let alpha = self.settings.smoothing.clamp(0.0, 0.95);
         self.smooth_x = self.smooth_x * alpha + raw_dx * (1.0 - alpha);
         self.smooth_y = self.smooth_y * alpha + raw_dy * (1.0 - alpha);
 
-        // 4. Sensitivity & Acceleration curve
+        // 5. Sensitivity & Acceleration curve
         let mag = (self.smooth_x * self.smooth_x + self.smooth_y * self.smooth_y).sqrt();
         let accel_factor = if self.settings.acceleration > 1.0 && mag > 1.0 {
             mag.powf(self.settings.acceleration - 1.0).min(5.0)
@@ -184,7 +220,7 @@ impl MotionProcessor {
         let move_x = self.smooth_x * self.settings.sensitivity * self.settings.sensitivity_x * accel_factor;
         let move_y = self.smooth_y * self.settings.sensitivity * self.settings.sensitivity_y * accel_factor;
 
-        // 5. Sub-pixel accumulator
+        // 6. Sub-pixel accumulator
         self.accum_x += move_x;
         self.accum_y += move_y;
 
@@ -195,6 +231,21 @@ impl MotionProcessor {
         self.accum_y -= out_y as f32;
 
         (out_x, out_y)
+    }
+
+    /// Convenience process wrapper using neutral gravity orientation (face up).
+    pub fn process(&mut self, raw_gyro_x: u16, raw_gyro_y: u16) -> (i32, i32) {
+        self.process_with_accel(raw_gyro_x, raw_gyro_y, [1098, 2048, 2048])
+    }
+
+    /// Returns the current estimated roll angle in degrees (-180° to +180°).
+    pub fn current_roll_deg(&self) -> f32 {
+        let len = (self.grav_lat * self.grav_lat + self.grav_norm * self.grav_norm).sqrt();
+        if len > 150.0 {
+            self.grav_lat.atan2(-self.grav_norm).to_degrees()
+        } else {
+            0.0
+        }
     }
 
     /// Resets sub-pixel accumulator and smoothing history.
@@ -294,4 +345,77 @@ mod tests {
         proc.set_cursor_enabled(false);
         assert_eq!(proc.process(700, 700), (0, 0));
     }
+
+    #[test]
+    fn roll_angle_estimation() {
+        let mut proc = MotionProcessor::default();
+
+        // 1. Flat (face up): norm = 1048 (-1000 diff), lat = 2048 (0 diff) -> 0°
+        for _ in 0..50 {
+            proc.process_with_accel(537, 537, [1048, 2048, 2048]);
+        }
+        assert!(proc.current_roll_deg().abs() < 1.0, "flat should be ~0° roll");
+
+        // 2. Rolled 90° clockwise: norm = 2048 (0 diff), lat = 3048 (+1000 diff) -> +90°
+        for _ in 0..60 {
+            proc.process_with_accel(537, 537, [2048, 3048, 2048]);
+        }
+        let roll = proc.current_roll_deg();
+        assert!((roll - 90.0).abs() < 1.0, "expected ~90° clockwise, got {}", roll);
+
+        // 3. Rolled 90° counter-clockwise: norm = 2048 (0 diff), lat = 1048 (-1000 diff) -> -90°
+        for _ in 0..70 {
+            proc.process_with_accel(537, 537, [2048, 1048, 2048]);
+        }
+        let roll = proc.current_roll_deg();
+        assert!((roll - (-90.0)).abs() < 1.0, "expected ~-90° counter-clockwise, got {}", roll);
+    }
+
+    #[test]
+    fn roll_compensation_transforms_body_axes_to_screen_up() {
+        let mut settings = MotionSettings::default();
+        settings.deadzone = 0.0;
+        settings.smoothing = 0.0;
+        settings.acceleration = 1.0;
+        settings.sensitivity = 1.0;
+        settings.roll_compensation = true;
+
+        let mut proc = MotionProcessor::new(settings);
+        proc.set_center(500.0, 500.0);
+
+        // Warm up filter with 90° clockwise gravity (lat = 3048, norm = 2048)
+        for _ in 0..30 {
+            proc.process_with_accel(500, 500, [2048, 3048, 2048]);
+        }
+
+        // When tilted 90° CW, moving physically UP means swinging the nose towards the remote's left edge.
+        // In the remote body, that is raw_gyro_x < center (500 - 450 = +50 body yaw left).
+        // With roll compensation, this MUST translate to screen UP (dy < 0) and negligible dx.
+        let (dx, dy) = proc.process_with_accel(550, 500, [2048, 3048, 2048]);
+        assert!(dy < 0, "screen dy should be negative (UP) when moving physically up at 90° CW, got dy={}", dy);
+        assert_eq!(dx, 0, "screen dx should be 0 for pure physical up movement, got dx={}", dx);
+    }
+
+    #[test]
+    fn roll_compensation_disabled_leaves_raw_body_axes() {
+        let mut settings = MotionSettings::default();
+        settings.deadzone = 0.0;
+        settings.smoothing = 0.0;
+        settings.acceleration = 1.0;
+        settings.sensitivity = 1.0;
+        settings.roll_compensation = false;
+
+        let mut proc = MotionProcessor::new(settings);
+        proc.set_center(500.0, 500.0);
+
+        for _ in 0..20 {
+            proc.process_with_accel(500, 500, [2048, 3048, 2048]);
+        }
+
+        // Without compensation, gyro_x delta remains strictly horizontal (dx)
+        let (dx, dy) = proc.process_with_accel(550, 500, [2048, 3048, 2048]);
+        assert!(dx != 0, "raw dx should be non-zero");
+        assert_eq!(dy, 0, "raw dy should be 0 without roll compensation");
+    }
 }
+

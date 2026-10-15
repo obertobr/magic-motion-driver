@@ -20,6 +20,7 @@ pub struct MotionConfig {
     pub smoothing: f32,
     pub invert_x: bool,
     pub invert_y: bool,
+    pub roll_compensation: bool,
 }
 
 impl Default for MotionConfig {
@@ -34,6 +35,7 @@ impl Default for MotionConfig {
             smoothing: s.smoothing,
             invert_x: s.invert_x,
             invert_y: s.invert_y,
+            roll_compensation: s.roll_compensation,
         }
     }
 }
@@ -49,6 +51,7 @@ impl From<&MotionConfig> for MotionSettings {
             smoothing: c.smoothing,
             invert_x: c.invert_x,
             invert_y: c.invert_y,
+            roll_compensation: c.roll_compensation,
         }
     }
 }

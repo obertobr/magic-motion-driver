@@ -528,6 +528,20 @@ impl DriverApp {
                 changed |= ui.checkbox(&mut self.config.motion.invert_x, "Inverter Eixo X (Horizontal)").changed();
                 changed |= ui.checkbox(&mut self.config.motion.invert_y, "Inverter Eixo Y (Vertical)").changed();
             });
+
+            ui.add_space(8.0);
+            ui.group(|ui| {
+                ui.label(egui::RichText::new("Orientação & Compensação de Rotação:").strong());
+                changed |= ui.checkbox(
+                    &mut self.config.motion.roll_compensation,
+                    "Compensar Rotação do Controle (Roll / Gravidade)",
+                ).changed();
+                ui.label(
+                    egui::RichText::new("Garante que apontar para cima sempre mova o mouse para cima, mesmo segurando o controle inclinado ou deitado de lado.")
+                        .small()
+                        .color(Color32::GRAY),
+                );
+            });
         });
 
         if changed {
@@ -767,6 +781,8 @@ impl DriverApp {
                     ui.separator();
                     let cursor_status = if t.cursor_enabled { "Ativa" } else { "Pausada" };
                     ui.label(format!("Mira: {cursor_status}"));
+                    ui.separator();
+                    ui.label(format!("Inclinação (Roll): {:.1}°", t.roll_deg));
                 });
             });
 
