@@ -33,17 +33,6 @@ pub fn run_gui_app(
             // Dark visuals
             cc.egui_ctx.set_visuals(egui::Visuals::dark());
 
-            // Wake up egui event loop immediately when tray icon or menu items are interacted with
-            let ctx_icon = cc.egui_ctx.clone();
-            tray_icon::TrayIconEvent::set_event_handler(Some(move |_| {
-                ctx_icon.request_repaint();
-            }));
-
-            let ctx_menu = cc.egui_ctx.clone();
-            tray_icon::menu::MenuEvent::set_event_handler(Some(move |_| {
-                ctx_menu.request_repaint();
-            }));
-
             let app = DriverApp::new(cc, config, cmd_tx, telem_rx);
 
             Ok(Box::new(AppWrapper { app }))
@@ -59,14 +48,11 @@ struct AppWrapper {
 }
 
 impl eframe::App for AppWrapper {
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.app.update_background(ctx);
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        if self.app.should_exit {
-            std::process::exit(0);
-        }
-        self.app.poll_telemetry();
         self.app.render(ui);
-        if self.app.should_exit {
-            std::process::exit(0);
-        }
     }
 }

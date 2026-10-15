@@ -61,6 +61,8 @@ impl SystemTray {
 
         let tray_icon = TrayIconBuilder::new()
             .with_menu(Box::new(menu))
+            .with_menu_on_left_click(false)
+            .with_menu_on_right_click(true)
             .with_tooltip("LG Magic Motion: Desconectado")
             .with_icon(icon_disconnected.clone())
             .build()?;
@@ -130,7 +132,8 @@ impl SystemTray {
         // Drain all icon click / double click events
         while let Ok(event) = tray_icon::TrayIconEvent::receiver().try_recv() {
             match event {
-                tray_icon::TrayIconEvent::DoubleClick { .. } => {
+                tray_icon::TrayIconEvent::Click { button: tray_icon::MouseButton::Left, button_state: tray_icon::MouseButtonState::Up, .. }
+                | tray_icon::TrayIconEvent::DoubleClick { button: tray_icon::MouseButton::Left, .. } => {
                     action = Some(TrayAction::OpenPanel);
                 }
                 _ => {}

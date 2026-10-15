@@ -144,9 +144,13 @@ impl DriverApp {
         }
     }
 
-    pub fn render(&mut self, ui: &mut egui::Ui) {
-        let ctx = ui.ctx().clone();
-        self.ensure_texture(&ctx);
+    pub fn update_background(&mut self, ctx: &egui::Context) {
+        if self.should_exit {
+            let _ = self.driver_cmd_tx.send(DriverCommand::Stop);
+            std::process::exit(0);
+        }
+
+        self.poll_telemetry();
 
         // Process System Tray events & live connection status
         if let Some(ref mut tray) = self.tray {
@@ -159,7 +163,7 @@ impl DriverApp {
                 Some(TrayAction::Quit) => {
                     self.should_exit = true;
                     let _ = self.driver_cmd_tx.send(DriverCommand::Stop);
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    std::process::exit(0);
                 }
                 None => {}
             }
@@ -167,11 +171,27 @@ impl DriverApp {
 
         // Intercept close button to hide to tray (unless user clicked Sair)
         if ctx.input(|i| i.viewport().close_requested()) {
-            if !self.should_exit {
+            if self.should_exit {
+                let _ = self.driver_cmd_tx.send(DriverCommand::Stop);
+                std::process::exit(0);
+            } else {
                 ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
                 ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
             }
         }
+
+        if self.active_tab == Tab::Sensors {
+            ctx.request_repaint();
+        } else if self.latest_telemetry.connected || !self.latest_telemetry.active_buttons.is_empty() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(30));
+        } else {
+            ctx.request_repaint_after(std::time::Duration::from_millis(60));
+        }
+    }
+
+    pub fn render(&mut self, ui: &mut egui::Ui) {
+        let ctx = ui.ctx().clone();
+        self.ensure_texture(&ctx);
 
         // Top Header Panel
         Panel::top("header").show(ui, |ui| {
@@ -379,16 +399,6 @@ impl DriverApp {
                 });
             });
         });
-
-        if self.active_tab == Tab::Sensors {
-            // Em "Dados Brutos", força repaint contínuo a 60 FPS para atualizar sensores em tempo real
-            ctx.request_repaint();
-        } else if self.latest_telemetry.connected || !self.latest_telemetry.active_buttons.is_empty() {
-            ctx.request_repaint_after(std::time::Duration::from_millis(30));
-        } else {
-            // Mantém polling do tray e status de conexão ativo mesmo com janela oculta
-            ctx.request_repaint_after(std::time::Duration::from_millis(100));
-        }
     }
 }
 
