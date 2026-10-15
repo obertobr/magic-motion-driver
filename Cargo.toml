@@ -1,0 +1,48 @@
+[package]
+name = "magic-motion"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "User-mode Windows driver for the LG Magic Motion remote (AN-MR200 / AN-MR100)"
+license = "MIT"
+publish = false
+
+[lib]
+name = "magic_motion"
+path = "src/lib.rs"
+
+[[bin]]
+name = "magic-motion"
+path = "src/main.rs"
+
+[dependencies]
+eframe = { version = "0.36.2", default-features = false, features = ["default_fonts", "glow"] }
+image = { version = "0.25.10", default-features = false, features = ["png"] }
+log = "0.4"
+serde = { version = "1.0.229", features = ["derive"] }
+serialport = { version = "4.10.1", default-features = false }
+toml = "1.1.8"
+tray-icon = "0.26.1"
+windows-sys = { version = "0.61.2", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_Threading",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_WindowsAndMessaging",
+] }
+winreg = "0.56.0"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+strip = true
+panic = "abort"
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+missing_debug_implementations = "warn"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+undocumented_unsafe_blocks = "warn"
