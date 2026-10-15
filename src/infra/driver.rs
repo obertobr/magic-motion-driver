@@ -147,8 +147,15 @@ fn run_driver_loop(
         loop {
             match cmd_rx.try_recv() {
                 Ok(DriverCommand::UpdateConfig(new_cfg)) => {
+                    let port_changed = new_cfg.port_override != config.port_override;
                     processor.set_settings(MotionSettings::from(&new_cfg.motion));
                     config = new_cfg;
+                    if port_changed {
+                        port_stream = None;
+                        port_name = None;
+                        decoder.reset();
+                        last_reconnect_attempt = Instant::now() - Duration::from_secs(5);
+                    }
                 }
                 Ok(DriverCommand::ToggleCursor) => {
                     processor.toggle_cursor();

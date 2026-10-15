@@ -122,9 +122,28 @@ impl DriverApp {
                 ui.label(egui::RichText::new("Driver & Painel").color(Color32::from_rgb(160, 160, 180)));
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button("Minimizar p/ Bandeja").clicked() {
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
-                    }
+                    // Lateral direita superior: bolinha de status (verde conectado / vermelha desconectado)
+                    let dot_color = if self.latest_telemetry.connected {
+                        Color32::from_rgb(40, 220, 100)
+                    } else {
+                        Color32::from_rgb(230, 60, 60)
+                    };
+                    let (dot_rect, dot_response) = ui.allocate_exact_size(Vec2::splat(16.0), egui::Sense::hover());
+                    ui.painter().circle_filled(dot_rect.center(), 5.5, dot_color);
+                    ui.painter().circle_stroke(
+                        dot_rect.center(),
+                        5.5,
+                        Stroke::new(1.0, if self.latest_telemetry.connected { Color32::from_rgb(20, 160, 60) } else { Color32::from_rgb(160, 30, 30) }),
+                    );
+
+                    let tooltip = if self.latest_telemetry.connected {
+                        format!("Conectado ({}) - {:.0} Hz", self.latest_telemetry.port_name, self.latest_telemetry.rate_hz)
+                    } else {
+                        "Desconectado (Aguardando receptor CP2102...)".to_string()
+                    };
+                    dot_response.on_hover_text(tooltip);
+
+                    ui.add_space(10.0);
 
                     if ui.button("Recalibrar Centro").clicked() {
                         let _ = self.driver_cmd_tx.send(DriverCommand::Recenter);
@@ -137,13 +156,6 @@ impl DriverApp {
                     };
                     if ui.button(egui::RichText::new(cursor_txt).color(cursor_color).strong()).clicked() {
                         let _ = self.driver_cmd_tx.send(DriverCommand::ToggleCursor);
-                    }
-
-                    if self.latest_telemetry.connected {
-                        let txt = format!("Conectado ({}) - {:.0} Hz", self.latest_telemetry.port_name, self.latest_telemetry.rate_hz);
-                        ui.label(egui::RichText::new(txt).color(Color32::from_rgb(80, 220, 120)).strong());
-                    } else {
-                        ui.label(egui::RichText::new("Aguardando receptor CP2102...").color(Color32::from_rgb(230, 80, 80)));
                     }
                 });
             });
@@ -392,6 +404,50 @@ impl DriverApp {
             }
         });
 
+        ui.add_space(8.0);
+        ui.group(|ui| {
+            ui.label(egui::RichText::new("Conexão e Porta COM:").strong());
+            ui.label(
+                egui::RichText::new("Por padrão, o driver detecta automaticamente a porta do receptor CP2102 da LG.")
+                    .small()
+                    .color(Color32::GRAY),
+            );
+
+            let mut available_ports = crate::infra::serial::list_available_ports();
+            available_ports.sort();
+
+            let current_port_label = match &self.config.port_override {
+                Some(p) if !p.trim().is_empty() => format!("Manual: {p}"),
+                _ => "Automático (Auto-detectar receptor CP2102)".to_string(),
+            };
+
+            let mut port_changed = false;
+            egui::ComboBox::from_id_salt("port_override_selector")
+                .selected_text(&current_port_label)
+                .show_ui(ui, |ui| {
+                    let is_auto = self.config.port_override.is_none();
+                    if ui.selectable_label(is_auto, "Automático (Auto-detectar receptor CP2102)").clicked() && !is_auto {
+                        self.config.port_override = None;
+                        port_changed = true;
+                    }
+
+                    if !available_ports.is_empty() {
+                        ui.separator();
+                        for port in &available_ports {
+                            let is_selected = self.config.port_override.as_deref() == Some(port.as_str());
+                            if ui.selectable_label(is_selected, format!("Forçar {port}")).clicked() && !is_selected {
+                                self.config.port_override = Some(port.clone());
+                                port_changed = true;
+                            }
+                        }
+                    }
+                });
+
+            if port_changed {
+                self.save_config();
+            }
+        });
+
         if changed {
             let _ = self.driver_cmd_tx.send(DriverCommand::UpdateConfig(self.config.clone()));
         }
@@ -405,7 +461,12 @@ impl DriverApp {
 
         ui.group(|ui| {
             ui.label(egui::RichText::new("Conexão & Frequência:").strong());
-            ui.label(format!("Porta COM: {}", if t.port_name.is_empty() { "Nenhuma" } else { &t.port_name }));
+            let mode_str = match &self.config.port_override {
+                Some(p) if !p.trim().is_empty() => format!("Manual ({p})"),
+                _ => "Automático (Auto-detectar receptor CP2102)".to_string(),
+            };
+            ui.label(format!("Modo de Porta: {mode_str}"));
+            ui.label(format!("Porta COM Ativa: {}", if t.port_name.is_empty() { "Nenhuma (Desconectado)" } else { &t.port_name }));
             ui.label(format!("Frequência: {:.1} Hz (~9 ms/pacote)", t.rate_hz));
             ui.label(format!("Mira Ativa: {}", if t.cursor_enabled { "Sim" } else { "Pausada" }));
         });

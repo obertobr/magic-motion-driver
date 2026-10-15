@@ -60,3 +60,11 @@ pub fn open_port(port_name: &str) -> Result<Box<dyn SerialPort>, serialport::Err
         .timeout(Duration::from_millis(15))
         .open()
 }
+
+/// Lists all available serial/COM ports on the system.
+pub fn list_available_ports() -> Vec<String> {
+    serialport::available_ports()
+        .map(|ports| ports.into_iter().map(|p| p.port_name).collect())
+        .unwrap_or_default()
+}
+
