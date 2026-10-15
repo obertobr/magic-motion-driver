@@ -21,6 +21,7 @@ pub struct DriverApp {
     texture: Option<egui::TextureHandle>,
     tray: Option<SystemTray>,
     save_status: Option<(String, std::time::Instant)>,
+    calibration_feedback: Option<(String, std::time::Instant)>,
     active_tab: Tab,
     pub should_exit: bool,
     gyro_history_x: VecDeque<f32>,
@@ -44,6 +45,7 @@ impl std::fmt::Debug for DriverApp {
 enum Tab {
     Buttons,
     Motion,
+    Settings,
     Sensors,
 }
 
@@ -65,6 +67,7 @@ impl DriverApp {
             texture: None,
             tray,
             save_status: None,
+            calibration_feedback: None,
             active_tab: Tab::Buttons,
             should_exit: false,
             gyro_history_x: VecDeque::with_capacity(120),
@@ -174,8 +177,7 @@ impl DriverApp {
         Panel::top("header").show(ui, |ui| {
             ui.add_space(6.0);
             ui.horizontal(|ui| {
-                ui.heading("LG Magic Motion");
-                ui.label(egui::RichText::new("Driver & Painel").color(Color32::from_rgb(160, 160, 180)));
+                ui.heading("LG Magic Motion Painel");
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     // Lateral direita superior: bolinha de status (verde conectado / vermelha desconectado)
@@ -200,10 +202,6 @@ impl DriverApp {
                     dot_response.on_hover_text(tooltip);
 
                     ui.add_space(10.0);
-
-                    if ui.button("Recalibrar Centro").clicked() {
-                        let _ = self.driver_cmd_tx.send(DriverCommand::Recenter);
-                    }
 
                     let (cursor_txt, cursor_color) = if self.latest_telemetry.cursor_enabled {
                         ("Mira: ATIVA", Color32::from_rgb(40, 200, 100))
@@ -365,8 +363,9 @@ impl DriverApp {
                 // Right: Tabs
                 ui.vertical(|ui| {
                     ui.horizontal(|ui| {
-                        ui.selectable_value(&mut self.active_tab, Tab::Buttons, "Mapeamento de Botões");
-                        ui.selectable_value(&mut self.active_tab, Tab::Motion, "Movimento & Mira");
+                        ui.selectable_value(&mut self.active_tab, Tab::Buttons, "Botões");
+                        ui.selectable_value(&mut self.active_tab, Tab::Motion, "Movimento");
+                        ui.selectable_value(&mut self.active_tab, Tab::Settings, "Configurações");
                         ui.selectable_value(&mut self.active_tab, Tab::Sensors, "Dados Brutos");
                     });
                     ui.separator();
@@ -374,6 +373,7 @@ impl DriverApp {
                     match self.active_tab {
                         Tab::Buttons => self.render_buttons_tab(ui),
                         Tab::Motion => self.render_motion_tab(ui),
+                        Tab::Settings => self.render_settings_tab(ui),
                         Tab::Sensors => self.render_sensors_tab(ui),
                     }
                 });
@@ -479,130 +479,249 @@ impl DriverApp {
     }
 
     fn render_motion_tab(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Ajustes de Movimento e Câmera");
-        ui.label("Configurações otimizadas para navegação no desktop e mira em jogos.");
-        ui.add_space(10.0);
+        ui.heading("Ajustes de Movimento e Sensibilidade");
+        ui.label(
+            egui::RichText::new("Curvas e multiplicadores de resposta para navegação no desktop e mira em jogos.")
+                .small()
+                .color(Color32::GRAY),
+        );
+        ui.add_space(8.0);
 
         let mut changed = false;
 
-        ui.group(|ui| {
-            ui.label(egui::RichText::new("Sensibilidade:").strong());
-            changed |= ui.add(egui::Slider::new(&mut self.config.motion.sensitivity, 0.05..=1.5).text("Sensibilidade Geral")).changed();
-            changed |= ui.add(egui::Slider::new(&mut self.config.motion.sensitivity_x, 0.2..=2.5).text("Multiplicador X (Yaw)")).changed();
-            changed |= ui.add(egui::Slider::new(&mut self.config.motion.sensitivity_y, 0.2..=2.5).text("Multiplicador Y (Pitch)")).changed();
-        });
+        egui::ScrollArea::vertical().auto_shrink([false; 2]).show(ui, |ui| {
+            ui.group(|ui| {
+                ui.label(egui::RichText::new("Sensibilidade dos Eixos:").strong());
+                changed |= ui.add(egui::Slider::new(&mut self.config.motion.sensitivity, 0.05..=1.5).text("Sensibilidade Geral")).changed();
+                changed |= ui.add(egui::Slider::new(&mut self.config.motion.sensitivity_x, 0.2..=2.5).text("Multiplicador X (Yaw / Horizontal)")).changed();
+                changed |= ui.add(egui::Slider::new(&mut self.config.motion.sensitivity_y, 0.2..=2.5).text("Multiplicador Y (Pitch / Vertical)")).changed();
+            });
 
-        ui.add_space(8.0);
-        ui.group(|ui| {
-            ui.label(egui::RichText::new("Precisão & Filtros:").strong());
-            changed |= ui.add(egui::Slider::new(&mut self.config.motion.deadzone, 0.0..=6.0).text("Zona Morta (ADC)").suffix(" pts")).changed();
-            ui.label(egui::RichText::new("Elimina tremor e ruído quando a mão está parada.").small().color(Color32::GRAY));
+            ui.add_space(8.0);
+            ui.group(|ui| {
+                ui.label(egui::RichText::new("Precisão & Filtros:").strong());
+                changed |= ui.add(egui::Slider::new(&mut self.config.motion.deadzone, 0.0..=6.0).text("Zona Morta (Deadzone)").suffix(" pts")).changed();
+                ui.label(egui::RichText::new("Elimina micro-tremores e ruído do sensor com a mão parada.").small().color(Color32::GRAY));
 
-            changed |= ui.add(egui::Slider::new(&mut self.config.motion.acceleration, 1.0..=1.8).text("Curva de Aceleração")).changed();
-            ui.label(egui::RichText::new("1.0 = Linear (1:1). Acima de 1.1 dá mais agilidade a movimentos rápidos.").small().color(Color32::GRAY));
+                ui.add_space(4.0);
+                changed |= ui.add(egui::Slider::new(&mut self.config.motion.acceleration, 1.0..=1.8).text("Curva de Aceleração")).changed();
+                ui.label(egui::RichText::new("1.0 = Movimento linear (1:1). Acima de 1.1 dá mais agilidade a movimentos rápidos de pulso.").small().color(Color32::GRAY));
 
-            changed |= ui.add(egui::Slider::new(&mut self.config.motion.smoothing, 0.0..=0.75).text("Suavização (Low-Pass)")).changed();
-            ui.label(egui::RichText::new("Filtro exponencial para movimentos sem serrilhado.").small().color(Color32::GRAY));
-        });
+                ui.add_space(4.0);
+                changed |= ui.add(egui::Slider::new(&mut self.config.motion.smoothing, 0.0..=0.75).text("Suavização (Low-Pass Filter)")).changed();
+                ui.label(egui::RichText::new("Filtro exponencial que suaviza os passos do mouse sem adicionar atraso perceptível.").small().color(Color32::GRAY));
+            });
 
-        ui.add_space(8.0);
-        ui.group(|ui| {
-            ui.label(egui::RichText::new("Opções do Sistema:").strong());
-            changed |= ui.checkbox(&mut self.config.motion.invert_x, "Inverter Eixo X (Horizontal)").changed();
-            changed |= ui.checkbox(&mut self.config.motion.invert_y, "Inverter Eixo Y (Vertical)").changed();
-
-            ui.add_space(4.0);
-            ui.label("Restringir Cursor a um Monitor:");
-            let monitors = crate::infra::input::list_monitors();
-            let current_monitor_label = match self.config.target_monitor {
-                Some(id) => {
-                    if let Some(m) = monitors.iter().find(|m| m.id == id) {
-                        format!("{} ({}x{})", m.name, m.rect[2] - m.rect[0], m.rect[3] - m.rect[1])
-                    } else {
-                        format!("Monitor {id}")
-                    }
-                }
-                None => "Todos os Monitores (Livre)".to_string(),
-            };
-
-            egui::ComboBox::from_id_salt("monitor_selector")
-                .selected_text(&current_monitor_label)
-                .show_ui(ui, |ui| {
-                    if ui.selectable_label(self.config.target_monitor.is_none(), "Todos os Monitores (Livre)").clicked() && self.config.target_monitor.is_some() {
-                        self.config.target_monitor = None;
-                        changed = true;
-                    }
-                    for m in &monitors {
-                        let is_selected = self.config.target_monitor == Some(m.id);
-                        let label = format!("{} ({}x{})", m.name, m.rect[2] - m.rect[0], m.rect[3] - m.rect[1]);
-                        if ui.selectable_label(is_selected, label).clicked() && !is_selected {
-                            self.config.target_monitor = Some(m.id);
-                            changed = true;
-                        }
-                    }
-                });
-
-            ui.add_space(4.0);
-            let mut autostart = is_autostart_enabled();
-            if ui.checkbox(&mut autostart, "Iniciar junto com o Windows").changed() {
-                let _ = set_autostart(autostart);
-                self.config.auto_start = autostart;
-                self.save_config();
-            }
-
-            ui.add_space(6.0);
-            if ui.button("Restaurar Padrões de Fábrica").clicked() {
-                self.config = Config::default();
-                self.save_config();
-            }
-        });
-
-        ui.add_space(8.0);
-        ui.group(|ui| {
-            ui.label(egui::RichText::new("Conexão e Porta COM:").strong());
-            ui.label(
-                egui::RichText::new("Por padrão, o driver detecta automaticamente a porta do receptor CP2102 da LG.")
-                    .small()
-                    .color(Color32::GRAY),
-            );
-
-            let mut available_ports = crate::infra::serial::list_available_ports();
-            available_ports.sort();
-
-            let current_port_label = match &self.config.port_override {
-                Some(p) if !p.trim().is_empty() => format!("Manual: {p}"),
-                _ => "Automático (Auto-detectar receptor CP2102)".to_string(),
-            };
-
-            let mut port_changed = false;
-            egui::ComboBox::from_id_salt("port_override_selector")
-                .selected_text(&current_port_label)
-                .show_ui(ui, |ui| {
-                    let is_auto = self.config.port_override.is_none();
-                    if ui.selectable_label(is_auto, "Automático (Auto-detectar receptor CP2102)").clicked() && !is_auto {
-                        self.config.port_override = None;
-                        port_changed = true;
-                    }
-
-                    if !available_ports.is_empty() {
-                        ui.separator();
-                        for port in &available_ports {
-                            let is_selected = self.config.port_override.as_deref() == Some(port.as_str());
-                            if ui.selectable_label(is_selected, format!("Forçar {port}")).clicked() && !is_selected {
-                                self.config.port_override = Some(port.clone());
-                                port_changed = true;
-                            }
-                        }
-                    }
-                });
-
-            if port_changed {
-                self.save_config();
-            }
+            ui.add_space(8.0);
+            ui.group(|ui| {
+                ui.label(egui::RichText::new("Inversão de Eixos:").strong());
+                changed |= ui.checkbox(&mut self.config.motion.invert_x, "Inverter Eixo X (Horizontal)").changed();
+                changed |= ui.checkbox(&mut self.config.motion.invert_y, "Inverter Eixo Y (Vertical)").changed();
+            });
         });
 
         if changed {
             let _ = self.driver_cmd_tx.send(DriverCommand::UpdateConfig(self.config.clone()));
+        }
+    }
+
+    fn render_settings_tab(&mut self, ui: &mut egui::Ui) {
+        ui.heading("Configurações do Sistema e Dispositivo");
+        ui.label(
+            egui::RichText::new("Gerencie telas, inicialização automática, conexões e calibração de sensores.")
+                .small()
+                .color(Color32::GRAY),
+        );
+        ui.add_space(8.0);
+
+        let mut config_changed = false;
+
+        egui::ScrollArea::vertical().auto_shrink([false; 2]).show(ui, |ui| {
+            // 1. Monitores & Exibição
+            ui.group(|ui| {
+                ui.label(egui::RichText::new("Monitores & Área de Controle:").strong());
+                ui.label(
+                    egui::RichText::new("Permite confinar os movimentos do Magic Remote a um monitor específico em computadores com múltiplas telas.")
+                        .small()
+                        .color(Color32::GRAY),
+                );
+
+                let monitors = crate::infra::input::list_monitors();
+                let current_monitor_label = match self.config.target_monitor {
+                    Some(id) => {
+                        if let Some(m) = monitors.iter().find(|m| m.id == id) {
+                            format!("{} ({}x{})", m.name, m.rect[2] - m.rect[0], m.rect[3] - m.rect[1])
+                        } else {
+                            format!("Monitor {id}")
+                        }
+                    }
+                    None => "Todos os Monitores (Livre)".to_string(),
+                };
+
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    ui.label("Restringir a:");
+                    egui::ComboBox::from_id_salt("settings_monitor_selector")
+                        .selected_text(&current_monitor_label)
+                        .show_ui(ui, |ui| {
+                            if ui.selectable_label(self.config.target_monitor.is_none(), "Todos os Monitores (Livre)").clicked() && self.config.target_monitor.is_some() {
+                                self.config.target_monitor = None;
+                                config_changed = true;
+                            }
+                            for m in &monitors {
+                                let is_selected = self.config.target_monitor == Some(m.id);
+                                let label = format!("{} ({}x{})", m.name, m.rect[2] - m.rect[0], m.rect[3] - m.rect[1]);
+                                if ui.selectable_label(is_selected, label).clicked() && !is_selected {
+                                    self.config.target_monitor = Some(m.id);
+                                    config_changed = true;
+                                }
+                            }
+                        });
+                });
+            });
+
+            ui.add_space(8.0);
+
+            // 2. Sistema & Inicialização
+            ui.group(|ui| {
+                ui.label(egui::RichText::new("Sistema & Inicialização:").strong());
+                let mut autostart = is_autostart_enabled();
+                if ui.checkbox(&mut autostart, "Iniciar automaticamente junto com o Windows").changed() {
+                    let _ = set_autostart(autostart);
+                    self.config.auto_start = autostart;
+                    self.save_config();
+                }
+                ui.label(
+                    egui::RichText::new("Ao fechar esta janela no 'X', o driver continuará em segundo plano na bandeja do sistema.")
+                        .small()
+                        .color(Color32::GRAY),
+                );
+            });
+
+            ui.add_space(8.0);
+
+            // 3. Conexão & Porta Serial
+            ui.group(|ui| {
+                ui.label(egui::RichText::new("Conexão e Porta Serial (COM):").strong());
+                ui.label(
+                    egui::RichText::new("Por padrão, o driver detecta automaticamente a porta do receptor CP2102 da LG.")
+                        .small()
+                        .color(Color32::GRAY),
+                );
+
+                let mut available_ports = crate::infra::serial::list_available_ports();
+                available_ports.sort();
+
+                let current_port_label = match &self.config.port_override {
+                    Some(p) if !p.trim().is_empty() => format!("Manual: {p}"),
+                    _ => "Automático (Auto-detectar receptor CP2102)".to_string(),
+                };
+
+                let mut port_changed = false;
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    ui.label("Modo da Porta:");
+                    egui::ComboBox::from_id_salt("settings_port_selector")
+                        .selected_text(&current_port_label)
+                        .show_ui(ui, |ui| {
+                            let is_auto = self.config.port_override.is_none();
+                            if ui.selectable_label(is_auto, "Automático (Auto-detectar receptor CP2102)").clicked() && !is_auto {
+                                self.config.port_override = None;
+                                port_changed = true;
+                            }
+
+                            if !available_ports.is_empty() {
+                                ui.separator();
+                                for port in &available_ports {
+                                    let is_selected = self.config.port_override.as_deref() == Some(port.as_str());
+                                    if ui.selectable_label(is_selected, format!("Forçar {port}")).clicked() && !is_selected {
+                                        self.config.port_override = Some(port.clone());
+                                        port_changed = true;
+                                    }
+                                }
+                            }
+                        });
+                });
+
+                if port_changed {
+                    self.save_config();
+                }
+            });
+
+            ui.add_space(8.0);
+
+            // 4. Calibração de Ponto Neutro (Drift do Giroscópio)
+            ui.group(|ui| {
+                ui.label(egui::RichText::new("Calibração de Ponto Neutro (Zero do Giroscópio):").strong());
+                ui.label(
+                    egui::RichText::new(
+                        "O giroscópio mede a velocidade angular da sua mão. Se com o controle parado sobre a mesa \
+                        o cursor do mouse estiver se deslocando vagarosamente sozinho (drift), coloque o controle \
+                        imóvel sobre uma superfície plana e clique em 'Calibrar Ponto Neutro Atual'.",
+                    )
+                    .small()
+                    .color(Color32::GRAY),
+                );
+
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    ui.label(format!(
+                        "Centro calibrado atual: X={:.1}, Y={:.1} (Padrão de fábrica: 537.0)",
+                        self.latest_telemetry.center_x, self.latest_telemetry.center_y
+                    ));
+                });
+
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Calibrar Ponto Neutro Atual").clicked() {
+                        let _ = self.driver_cmd_tx.send(DriverCommand::Recenter);
+                        self.calibration_feedback = Some((
+                            format!(
+                                "Calibrado com a posição atual (X={}, Y={})!",
+                                self.latest_telemetry.gyro_x, self.latest_telemetry.gyro_y
+                            ),
+                            std::time::Instant::now(),
+                        ));
+                    }
+
+                    if ui.button("Restaurar Centro Padrão (537)").clicked() {
+                        let _ = self.driver_cmd_tx.send(DriverCommand::ResetCenter);
+                        self.calibration_feedback = Some((
+                            "Centro restaurado para o padrão de hardware (537.0).".to_string(),
+                            std::time::Instant::now(),
+                        ));
+                    }
+                });
+
+                if let Some((ref msg, time)) = self.calibration_feedback {
+                    if time.elapsed() < std::time::Duration::from_secs(4) {
+                        ui.add_space(4.0);
+                        ui.label(egui::RichText::new(msg).color(Color32::from_rgb(100, 220, 140)));
+                    }
+                }
+            });
+
+            ui.add_space(8.0);
+
+            // 5. Restauração de Fábrica
+            ui.group(|ui| {
+                ui.label(egui::RichText::new("Restaurar Padrões:").strong());
+                ui.label(
+                    egui::RichText::new("Restaura todos os mapeamentos de botões, sensibilidade e opções para as configurações de fábrica.")
+                        .small()
+                        .color(Color32::GRAY),
+                );
+                ui.add_space(4.0);
+                if ui.button("Restaurar Todas as Configurações de Fábrica").clicked() {
+                    self.config = Config::default();
+                    self.save_config();
+                    let _ = self.driver_cmd_tx.send(DriverCommand::ResetCenter);
+                }
+            });
+        });
+
+        if config_changed {
+            self.save_config();
         }
     }
 

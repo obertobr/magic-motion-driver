@@ -40,7 +40,7 @@ impl SystemTray {
         let status_item = MenuItem::new("Status: Desconectado", false, None);
         let item_open = MenuItem::new("Abrir Painel", true, None);
         let item_toggle = MenuItem::new("Ativar / Pausar Mira", true, None);
-        let item_recenter = MenuItem::new("Recalibrar Centro", true, None);
+        let item_recenter = MenuItem::new("Calibrar Ponto Neutro (Drift)", true, None);
         let item_quit = MenuItem::new("Sair", true, None);
 
         let menu_open_id = item_open.id().clone();

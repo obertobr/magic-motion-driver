@@ -63,6 +63,7 @@ pub enum DriverCommand {
     UpdateConfig(Config),
     ToggleCursor,
     Recenter,
+    ResetCenter,
     Stop,
 }
 
@@ -172,7 +173,15 @@ fn run_driver_loop(
                     processor.toggle_cursor();
                 }
                 Ok(DriverCommand::Recenter) => {
-                    // Recenter to current resting positions
+                    // Recalibrate neutral resting gyro position from latest live frame
+                    if let Some(ref f) = last_valid_frame {
+                        processor.set_center(f.gyro_x as f32, f.gyro_y as f32);
+                    } else {
+                        processor.set_center(537.0, 537.0);
+                    }
+                }
+                Ok(DriverCommand::ResetCenter) => {
+                    // Reset to hardware factory center (537)
                     processor.set_center(537.0, 537.0);
                 }
                 Ok(DriverCommand::Stop) => {

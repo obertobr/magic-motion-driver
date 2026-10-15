@@ -16,7 +16,7 @@ pub fn run_gui_app(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let native_options = eframe::NativeOptions {
         viewport: ViewportBuilder::default()
-            .with_title("LG Magic Motion Driver")
+            .with_title("LG Magic Motion Painel")
             .with_inner_size([720.0, 660.0])
             .with_min_inner_size([640.0, 580.0])
             .with_active(true),
@@ -27,7 +27,7 @@ pub fn run_gui_app(
     let telem_rx = driver.take_telemetry_receiver();
 
     let res = eframe::run_native(
-        "LG Magic Motion Driver",
+        "LG Magic Motion Painel",
         native_options,
         Box::new(move |cc| {
             // Dark visuals
