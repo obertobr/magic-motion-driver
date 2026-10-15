@@ -845,15 +845,18 @@ impl DriverApp {
                 );
                 ui.add_space(4.0);
 
-                let g_x = (t.accel_x as f32 - 2048.0) / 512.0;
-                let g_y = (t.accel_y as f32 - 2048.0) / 512.0;
-                let g_z = (t.accel_z as f32 - 2048.0) / 512.0;
+                let [g_x, g_y, g_z] = crate::domain::gravity::AccelCalibration::LG_AN_MR200
+                    .to_g([t.accel_x, t.accel_y, t.accel_z]);
+                let total_g = (g_x * g_x + g_y * g_y + g_z * g_z).sqrt();
+
+                ui.label(format!("Força G Total: {:.2}g (Repouso: 1.00g)", total_g));
+                ui.add_space(2.0);
 
                 draw_bipolar_slide(
                     ui,
-                    "Aceleração X (Lateral):",
+                    "Aceleração X (Longitudinal / Frente):",
                     t.accel_x as f32,
-                    2048.0,
+                    2055.0,
                     1000.0,
                     3100.0,
                     &format!("({:+.2}g)", g_x),
@@ -862,9 +865,9 @@ impl DriverApp {
 
                 draw_bipolar_slide(
                     ui,
-                    "Aceleração Y (Vertical):",
+                    "Aceleração Y (Lateral / Esquerda-Direita):",
                     t.accel_y as f32,
-                    2048.0,
+                    2012.0,
                     1000.0,
                     3100.0,
                     &format!("({:+.2}g)", g_y),
@@ -873,9 +876,9 @@ impl DriverApp {
 
                 draw_bipolar_slide(
                     ui,
-                    "Aceleração Z (Profundidade):",
+                    "Aceleração Z (Normal / Botões):",
                     t.accel_z as f32,
-                    2048.0,
+                    2180.0,
                     1000.0,
                     3100.0,
                     &format!("({:+.2}g)", g_z),
