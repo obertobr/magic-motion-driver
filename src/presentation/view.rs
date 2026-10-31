@@ -29,6 +29,16 @@ pub struct DriverApp {
     accel_history_x: VecDeque<f32>,
     accel_history_y: VecDeque<f32>,
     accel_history_z: VecDeque<f32>,
+    osc_gyro_x: bool,
+    osc_gyro_y: bool,
+    osc_accel_x: bool,
+    osc_accel_y: bool,
+    osc_accel_z: bool,
+    remote_yaw: f32,
+    remote_pitch: f32,
+    remote_roll: f32,
+    attitude: crate::domain::attitude::AttitudeEstimator,
+    mesh_3d: crate::presentation::mesh3d::Mesh3D,
 }
 
 impl std::fmt::Debug for DriverApp {
@@ -75,6 +85,16 @@ impl DriverApp {
             accel_history_x: VecDeque::with_capacity(120),
             accel_history_y: VecDeque::with_capacity(120),
             accel_history_z: VecDeque::with_capacity(120),
+            osc_gyro_x: true,
+            osc_gyro_y: true,
+            osc_accel_x: true,
+            osc_accel_y: true,
+            osc_accel_z: true,
+            remote_yaw: 0.0,
+            remote_pitch: 0.0,
+            remote_roll: 0.0,
+            attitude: crate::domain::attitude::AttitudeEstimator::default(),
+            mesh_3d: crate::presentation::mesh3d::Mesh3D::load_or_default(),
         }
     }
 
@@ -131,6 +151,21 @@ impl DriverApp {
         if self.accel_history_z.len() > MAX_HISTORY {
             self.accel_history_z.pop_front();
         }
+
+        // 3D Attitude Estimation via DCM (no Euler gimbal lock / no axis flipping / anti-jitter)
+        self.attitude.update(
+            telem.gyro_x,
+            telem.gyro_y,
+            telem.center_x,
+            telem.center_y,
+            [telem.accel_x, telem.accel_y, telem.accel_z],
+            0.010,
+        );
+
+        let (yaw, pitch, roll) = self.attitude.angles_deg();
+        self.remote_yaw = yaw;
+        self.remote_pitch = pitch;
+        self.remote_roll = roll;
 
         self.latest_telemetry = telem;
     }
@@ -699,6 +734,10 @@ impl DriverApp {
                 ui.horizontal(|ui| {
                     if ui.button("Calibrar Ponto Neutro Atual").clicked() {
                         let _ = self.driver_cmd_tx.send(DriverCommand::Recenter);
+                        self.attitude.recenter();
+                        self.remote_yaw = 0.0;
+                        self.remote_pitch = 0.0;
+                        self.remote_roll = 0.0;
                         self.calibration_feedback = Some((
                             format!(
                                 "Calibrado com a posição atual (X={}, Y={})!",
@@ -758,7 +797,7 @@ impl DriverApp {
         );
         ui.add_space(6.0);
 
-        let t = &self.latest_telemetry;
+        let t = self.latest_telemetry.clone();
 
         egui::ScrollArea::vertical().auto_shrink([false; 2]).show(ui, |ui| {
             // 1. Conexão & Telemetria
@@ -788,113 +827,199 @@ impl DriverApp {
 
             ui.add_space(6.0);
 
-            // 2. Giroscópio com Gráficos de Slide e Osciloscópio
+            // 2. Giroscópio e Acelerômetro Lado a Lado (2 Quadrados)
+            ui.columns(2, |cols| {
+                // Quadrado 1: Giroscópio
+                cols[0].group(|ui| {
+                    ui.set_min_height(195.0);
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new("Giroscópio (Angular)").strong());
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let gyro_mag = ((t.gyro_dx * t.gyro_dx + t.gyro_dy * t.gyro_dy) as f32).sqrt();
+                            ui.label(
+                                egui::RichText::new(format!("Δ: {:.0}", gyro_mag))
+                                    .color(Color32::from_rgb(0, 210, 255))
+                                    .small(),
+                            );
+                        });
+                    });
+                    ui.label(
+                        egui::RichText::new("Mede rotação instantânea (Yaw / Pitch). Repouso ~537.")
+                            .small()
+                            .color(Color32::GRAY),
+                    );
+                    ui.add_space(6.0);
+
+                    let delta_x_str = format!("Delta: {:+3}", t.gyro_dx);
+                    draw_bipolar_slide(
+                        ui,
+                        "Eixo X (Yaw):",
+                        t.gyro_x as f32,
+                        t.center_x,
+                        350.0,
+                        750.0,
+                        &delta_x_str,
+                        Color32::from_rgb(0, 210, 255),
+                    );
+
+                    let delta_y_val = format!("Delta: {:+3}", t.gyro_dy);
+                    draw_bipolar_slide(
+                        ui,
+                        "Eixo Y (Pitch):",
+                        t.gyro_y as f32,
+                        t.center_y,
+                        350.0,
+                        750.0,
+                        &delta_y_val,
+                        Color32::from_rgb(255, 195, 30),
+                    );
+
+                    ui.add_space(6.0);
+                    ui.label(
+                        egui::RichText::new(format!("Centro X: {:.0}  |  Centro Y: {:.0}", t.center_x, t.center_y))
+                            .small()
+                            .color(Color32::from_rgb(120, 135, 155)),
+                    );
+                });
+
+                // Quadrado 2: Acelerômetro
+                cols[1].group(|ui| {
+                    ui.set_min_height(195.0);
+                    let [g_x, g_y, g_z] = crate::domain::gravity::AccelCalibration::LG_AN_MR200
+                        .to_g([t.accel_x, t.accel_y, t.accel_z]);
+                    let total_g = (g_x * g_x + g_y * g_y + g_z * g_z).sqrt();
+
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new("Acelerômetro (Gravidade 3D)").strong());
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let g_color = if (total_g - 1.0).abs() < 0.15 {
+                                Color32::from_rgb(40, 220, 100)
+                            } else {
+                                Color32::from_rgb(255, 195, 30)
+                            };
+                            ui.label(egui::RichText::new(format!("{:.2}g", total_g)).color(g_color).strong());
+                        });
+                    });
+                    ui.label(
+                        egui::RichText::new("Mede a aceleração nos 3 eixos (ADC 12-bit calibrado).")
+                            .small()
+                            .color(Color32::GRAY),
+                    );
+                    ui.add_space(4.0);
+
+                    draw_bipolar_slide(
+                        ui,
+                        "Acel X (Frente):",
+                        t.accel_x as f32,
+                        2055.0,
+                        1000.0,
+                        3100.0,
+                        &format!("({:+.2}g)", g_x),
+                        Color32::from_rgb(244, 63, 94),
+                    );
+
+                    draw_bipolar_slide(
+                        ui,
+                        "Acel Y (Lateral):",
+                        t.accel_y as f32,
+                        2012.0,
+                        1000.0,
+                        3100.0,
+                        &format!("({:+.2}g)", g_y),
+                        Color32::from_rgb(34, 197, 94),
+                    );
+
+                    draw_bipolar_slide(
+                        ui,
+                        "Acel Z (Botões):",
+                        t.accel_z as f32,
+                        2180.0,
+                        1000.0,
+                        3100.0,
+                        &format!("({:+.2}g)", g_z),
+                        Color32::from_rgb(14, 165, 233),
+                    );
+                });
+            });
+
+            ui.add_space(6.0);
+
+            // 3. Gráfico Osciloscópio Multicanal com Toggles Individuais (em cima do 3D)
             ui.group(|ui| {
-                ui.label(egui::RichText::new("Giroscópio (Velocidade Angular):").strong());
-                ui.label(
-                    egui::RichText::new("O giroscópio mede rotação angular. Valores próximos ao centro (537) indicam repouso.")
-                        .small()
-                        .color(Color32::GRAY),
-                );
-                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("Gráfico Osciloscópio Multicanal (Tempo Real):").strong());
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.label(egui::RichText::new("Visualização Unificada").color(Color32::GRAY).small());
+                    });
+                });
+                ui.add_space(3.0);
 
-                let delta_x_str = format!("Delta: {:+3}", t.gyro_dx);
-                draw_bipolar_slide(
-                    ui,
-                    "Eixo X (Yaw / Horizontal):",
-                    t.gyro_x as f32,
-                    t.center_x,
-                    350.0,
-                    750.0,
-                    &delta_x_str,
-                    Color32::from_rgb(0, 210, 255),
-                );
-
-                let delta_y_str = format!("Eixo Y (Pitch / Vertical):");
-                let delta_y_val = format!("Delta: {:+3}", t.gyro_dy);
-                draw_bipolar_slide(
-                    ui,
-                    &delta_y_str,
-                    t.gyro_y as f32,
-                    t.center_y,
-                    350.0,
-                    750.0,
-                    &delta_y_val,
-                    Color32::from_rgb(255, 195, 30),
-                );
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(egui::RichText::new("Canais:").small().color(Color32::from_rgb(160, 175, 200)));
+                    ui.checkbox(&mut self.osc_gyro_x, egui::RichText::new("Giro X (Yaw)").color(Color32::from_rgb(0, 210, 255)).small());
+                    ui.checkbox(&mut self.osc_gyro_y, egui::RichText::new("Giro Y (Pitch)").color(Color32::from_rgb(255, 195, 30)).small());
+                    ui.checkbox(&mut self.osc_accel_x, egui::RichText::new("Acel X (Frente)").color(Color32::from_rgb(244, 63, 94)).small());
+                    ui.checkbox(&mut self.osc_accel_y, egui::RichText::new("Acel Y (Lateral)").color(Color32::from_rgb(34, 197, 94)).small());
+                    ui.checkbox(&mut self.osc_accel_z, egui::RichText::new("Acel Z (Botões)").color(Color32::from_rgb(14, 165, 233)).small());
+                });
 
                 ui.add_space(4.0);
-                draw_oscilloscope(
+
+                draw_multichannel_oscilloscope(
                     ui,
                     &self.gyro_history_x,
                     &self.gyro_history_y,
+                    &self.accel_history_x,
+                    &self.accel_history_y,
+                    &self.accel_history_z,
                     t.center_x,
                     t.center_y,
+                    self.osc_gyro_x,
+                    self.osc_gyro_y,
+                    self.osc_accel_x,
+                    self.osc_accel_y,
+                    self.osc_accel_z,
                 );
             });
 
             ui.add_space(6.0);
 
-            // 3. Acelerômetro com Gráficos de Slide
-            ui.group(|ui| {
-                ui.label(egui::RichText::new("Acelerômetro (Gravidade & Inclinação 3D):").strong());
-                ui.label(
-                    egui::RichText::new("Mede os vetores de força G nos 3 eixos espaciais (ADC 12-bit, repouso ~2048).")
-                        .small()
-                        .color(Color32::GRAY),
-                );
-                ui.add_space(4.0);
-
-                let [g_x, g_y, g_z] = crate::domain::gravity::AccelCalibration::LG_AN_MR200
-                    .to_g([t.accel_x, t.accel_y, t.accel_z]);
-                let total_g = (g_x * g_x + g_y * g_y + g_z * g_z).sqrt();
-
-                ui.label(format!("Força G Total: {:.2}g (Repouso: 1.00g)", total_g));
-                ui.add_space(2.0);
-
-                draw_bipolar_slide(
-                    ui,
-                    "Aceleração X (Longitudinal / Frente):",
-                    t.accel_x as f32,
-                    2055.0,
-                    1000.0,
-                    3100.0,
-                    &format!("({:+.2}g)", g_x),
-                    Color32::from_rgb(244, 63, 94),
-                );
-
-                draw_bipolar_slide(
-                    ui,
-                    "Aceleração Y (Lateral / Esquerda-Direita):",
-                    t.accel_y as f32,
-                    2012.0,
-                    1000.0,
-                    3100.0,
-                    &format!("({:+.2}g)", g_y),
-                    Color32::from_rgb(34, 197, 94),
-                );
-
-                draw_bipolar_slide(
-                    ui,
-                    "Aceleração Z (Normal / Botões):",
-                    t.accel_z as f32,
-                    2180.0,
-                    1000.0,
-                    3100.0,
-                    &format!("({:+.2}g)", g_z),
-                    Color32::from_rgb(14, 165, 233),
-                );
-            });
+            // 4. Objeto 3D da Orientação do Controle (embaixo do osciloscópio)
+            draw_3d_orientation_viewer(
+                ui,
+                &mut self.mesh_3d,
+                &mut self.attitude,
+                &mut self.remote_yaw,
+                &mut self.remote_pitch,
+                &mut self.remote_roll,
+            );
 
             ui.add_space(6.0);
 
-            // 4. Botões Físicos Pressionados
+            // 5. Estado Físico dos Botões com Hexadecimal Bruto (Simplificado)
             ui.group(|ui| {
-                ui.label(egui::RichText::new("Estado Físico dos Botões (Tempo Real):").strong());
-                if t.active_buttons.is_empty() {
-                    ui.label(egui::RichText::new("Nenhum botão pressionado no controle").color(Color32::GRAY));
-                } else {
-                    ui.horizontal_wrapped(|ui| {
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("Estado Físico dos Botões:").strong());
+
+                    let hex_color = if t.button_raw != 0 {
+                        Color32::from_rgb(0, 255, 180)
+                    } else {
+                        Color32::from_rgb(140, 155, 175)
+                    };
+
+                    ui.label(
+                        egui::RichText::new(format!("Hex: 0x{:02X}", t.button_raw))
+                            .monospace()
+                            .size(15.0)
+                            .color(hex_color)
+                            .strong(),
+                    );
+
+                    ui.separator();
+
+                    if t.active_buttons.is_empty() {
+                        ui.label(egui::RichText::new("Nenhum botão pressionado (repouso)").color(Color32::GRAY));
+                    } else {
                         for b in t.active_buttons.iter() {
                             ui.label(
                                 egui::RichText::new(format!("● {:?}", b))
@@ -902,12 +1027,81 @@ impl DriverApp {
                                     .strong(),
                             );
                         }
-                    });
-                }
+                    }
+                });
             });
+
             ui.add_space(8.0);
         });
     }
+}
+
+fn draw_3d_orientation_viewer(
+    ui: &mut egui::Ui,
+    mesh_3d: &mut crate::presentation::mesh3d::Mesh3D,
+    attitude: &mut crate::domain::attitude::AttitudeEstimator,
+    remote_yaw: &mut f32,
+    remote_pitch: &mut f32,
+    remote_roll: &mut f32,
+) {
+    ui.group(|ui| {
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("Orientação Espacial 3D (Simulação em Tempo Real):").strong());
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui
+                    .button(egui::RichText::new("⟲ Centralizar").small())
+                    .on_hover_text("Define a posição física atual do controle como centro neutro de referência")
+                    .clicked()
+                {
+                    attitude.recenter();
+                    *remote_yaw = 0.0;
+                    *remote_pitch = 0.0;
+                    *remote_roll = 0.0;
+                }
+                ui.label(
+                    egui::RichText::new(format!(
+                        "Yaw: {:+.1}°  |  Pitch: {:+.1}°  |  Roll: {:+.1}°",
+                        *remote_yaw, *remote_pitch, *remote_roll
+                    ))
+                    .color(Color32::from_rgb(180, 210, 255))
+                    .strong(),
+                );
+            });
+        });
+
+        ui.horizontal(|ui| {
+            ui.label(
+                egui::RichText::new(format!(
+                    "Modelo: {} ({} vértices, {} faces)",
+                    mesh_3d.name,
+                    mesh_3d.vertices.len(),
+                    mesh_3d.triangles.len()
+                ))
+                .small()
+                .color(Color32::from_rgb(0, 210, 255)),
+            );
+            ui.label(
+                egui::RichText::new("• Suporta carregar 'remote.obj' da pasta do executável")
+                    .small()
+                    .color(Color32::from_rgb(130, 145, 170)),
+            );
+        });
+        ui.add_space(4.0);
+
+        let height = 230.0;
+        let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), height), egui::Sense::hover());
+        let painter = ui.painter_at(rect);
+
+        // Canvas background
+        painter.rect_filled(rect, 6.0, Color32::from_rgb(14, 17, 24));
+        painter.rect_stroke(rect, 6.0, Stroke::new(1.0, Color32::from_rgb(38, 46, 64)), StrokeKind::Inside);
+
+        let center = Pos2::new(rect.min.x + rect.width() * 0.5, rect.min.y + rect.height() * 0.52);
+
+        // Render real 3D mesh with continuous 3D rotation matrix (no Euler singularities / flips)
+        let rel_rot = attitude.relative_matrix();
+        mesh_3d.render(&painter, center, &rel_rot, 1.0);
+    });
 }
 
 fn draw_bipolar_slide(
@@ -965,67 +1159,113 @@ fn draw_bipolar_slide(
     ui.add_space(3.0);
 }
 
-fn draw_oscilloscope(
-    ui: &mut egui::Ui,
-    history_x: &VecDeque<f32>,
-    history_y: &VecDeque<f32>,
-    center_x: f32,
-    center_y: f32,
-) {
-    ui.horizontal(|ui| {
-        ui.label(egui::RichText::new("Gráfico Osciloscópio (Tempo Real):").strong());
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.label(egui::RichText::new("— Giro Y (Pitch)").color(Color32::from_rgb(255, 195, 30)).small());
-            ui.add_space(8.0);
-            ui.label(egui::RichText::new("— Giro X (Yaw)").color(Color32::from_rgb(0, 210, 255)).small());
-        });
-    });
 
-    let height = 80.0;
+fn draw_multichannel_oscilloscope(
+    ui: &mut egui::Ui,
+    gyro_x: &VecDeque<f32>,
+    gyro_y: &VecDeque<f32>,
+    accel_x: &VecDeque<f32>,
+    accel_y: &VecDeque<f32>,
+    accel_z: &VecDeque<f32>,
+    center_gx: f32,
+    center_gy: f32,
+    show_gyro_x: bool,
+    show_gyro_y: bool,
+    show_accel_x: bool,
+    show_accel_y: bool,
+    show_accel_z: bool,
+) {
+    let height = 110.0;
     let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), height), egui::Sense::hover());
     let painter = ui.painter_at(rect);
 
-    painter.rect_filled(rect, 4.0, Color32::from_rgb(14, 17, 23));
-    painter.rect_stroke(rect, 4.0, Stroke::new(1.0, Color32::from_rgb(38, 46, 62)), StrokeKind::Inside);
+    // Frame styling
+    painter.rect_filled(rect, 4.0, Color32::from_rgb(12, 15, 22));
+    painter.rect_stroke(rect, 4.0, Stroke::new(1.0, Color32::from_rgb(34, 42, 58)), StrokeKind::Inside);
 
-    // Midline
     let mid_y = rect.min.y + rect.height() * 0.5;
+
+    // Grid lines: center (0.0)
     painter.line_segment(
         [Pos2::new(rect.min.x, mid_y), Pos2::new(rect.max.x, mid_y)],
-        Stroke::new(1.0, Color32::from_rgb(30, 40, 56)),
+        Stroke::new(1.0, Color32::from_rgb(45, 55, 75)),
     );
 
-    let n = history_x.len();
-    if n >= 2 {
-        let span = 120.0f32; // +/- 120 counts from center
-        let step_x = rect.width() / (n - 1) as f32;
+    // Grid lines: +1.0 and -1.0
+    let span = 1.6f32; // normalized units (+/- 1.6)
+    let unit_scale = (rect.height() * 0.42) / span;
 
-        let points_x: Vec<Pos2> = history_x
-            .iter()
-            .enumerate()
-            .map(|(i, &v)| {
-                let px = rect.min.x + i as f32 * step_x;
-                let py = mid_y - ((v - center_x) / span) * (rect.height() * 0.44);
-                Pos2::new(px, py.clamp(rect.min.y + 2.0, rect.max.y - 2.0))
-            })
-            .collect();
+    let pos_1_y = mid_y - 1.0 * unit_scale;
+    let neg_1_y = mid_y + 1.0 * unit_scale;
 
-        for w in points_x.windows(2) {
-            painter.line_segment([w[0], w[1]], Stroke::new(1.8, Color32::from_rgb(0, 210, 255)));
+    painter.line_segment(
+        [Pos2::new(rect.min.x, pos_1_y), Pos2::new(rect.max.x, pos_1_y)],
+        Stroke::new(0.8, Color32::from_rgb(26, 32, 45)),
+    );
+    painter.line_segment(
+        [Pos2::new(rect.min.x, neg_1_y), Pos2::new(rect.max.x, neg_1_y)],
+        Stroke::new(0.8, Color32::from_rgb(26, 32, 45)),
+    );
+
+    // Scale labels
+    painter.text(
+        Pos2::new(rect.min.x + 4.0, pos_1_y - 1.0),
+        egui::Align2::LEFT_CENTER,
+        "+1.0",
+        egui::FontId::monospace(9.0),
+        Color32::from_rgb(80, 95, 120),
+    );
+    painter.text(
+        Pos2::new(rect.min.x + 4.0, mid_y - 1.0),
+        egui::Align2::LEFT_CENTER,
+        " 0.0",
+        egui::FontId::monospace(9.0),
+        Color32::from_rgb(80, 95, 120),
+    );
+    painter.text(
+        Pos2::new(rect.min.x + 4.0, neg_1_y - 1.0),
+        egui::Align2::LEFT_CENTER,
+        "-1.0",
+        egui::FontId::monospace(9.0),
+        Color32::from_rgb(80, 95, 120),
+    );
+
+    // Helper to plot a normalized channel
+    let plot_channel = |history: &VecDeque<f32>, normalize_fn: &dyn Fn(f32) -> f32, color: Color32| {
+        let n = history.len();
+        if n >= 2 {
+            let step_x = rect.width() / (n - 1) as f32;
+            let points: Vec<Pos2> = history
+                .iter()
+                .enumerate()
+                .map(|(i, &v)| {
+                    let norm = normalize_fn(v);
+                    let px = rect.min.x + i as f32 * step_x;
+                    let py = mid_y - norm * unit_scale;
+                    Pos2::new(px, py.clamp(rect.min.y + 2.0, rect.max.y - 2.0))
+                })
+                .collect();
+
+            for w in points.windows(2) {
+                painter.line_segment([w[0], w[1]], Stroke::new(1.7, color));
+            }
         }
+    };
 
-        let points_y: Vec<Pos2> = history_y
-            .iter()
-            .enumerate()
-            .map(|(i, &v)| {
-                let px = rect.min.x + i as f32 * step_x;
-                let py = mid_y - ((v - center_y) / span) * (rect.height() * 0.44);
-                Pos2::new(px, py.clamp(rect.min.y + 2.0, rect.max.y - 2.0))
-            })
-            .collect();
-
-        for w in points_y.windows(2) {
-            painter.line_segment([w[0], w[1]], Stroke::new(1.8, Color32::from_rgb(255, 195, 30)));
-        }
+    if show_gyro_x {
+        plot_channel(gyro_x, &|v| (v - center_gx) / 100.0, Color32::from_rgb(0, 210, 255));
+    }
+    if show_gyro_y {
+        plot_channel(gyro_y, &|v| (v - center_gy) / 100.0, Color32::from_rgb(255, 195, 30));
+    }
+    if show_accel_x {
+        plot_channel(accel_x, &|v| (v - 2055.0) / 1018.0, Color32::from_rgb(244, 63, 94));
+    }
+    if show_accel_y {
+        plot_channel(accel_y, &|v| (v - 2012.0) / 1037.0, Color32::from_rgb(34, 197, 94));
+    }
+    if show_accel_z {
+        plot_channel(accel_z, &|v| (v - 2180.0) / 1037.0, Color32::from_rgb(14, 165, 233));
     }
 }
+

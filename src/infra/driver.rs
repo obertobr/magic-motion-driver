@@ -31,6 +31,7 @@ pub struct DriverTelemetry {
     pub accel_y: u16,
     pub accel_z: u16,
     pub active_buttons: ButtonSet,
+    pub button_raw: u8,
     pub cursor_enabled: bool,
     pub center_x: f32,
     pub center_y: f32,
@@ -51,6 +52,7 @@ impl Default for DriverTelemetry {
             accel_y: 2048,
             accel_z: 2048,
             active_buttons: ButtonSet::EMPTY,
+            button_raw: 0x00,
             cursor_enabled: true,
             center_x: 537.0,
             center_y: 537.0,
@@ -314,10 +316,10 @@ fn run_driver_loop(
         // 6. Send telemetry to UI at ~60 Hz (every 16 ms) or immediately if buttons change
         if last_telem_send.elapsed() >= Duration::from_millis(16) || !active_buttons.is_empty() {
             last_telem_send = Instant::now();
-            let (gx, gy, ax, ay, az) = if let Some(ref f) = last_valid_frame {
-                (f.gyro_x, f.gyro_y, f.accel[0], f.accel[1], f.accel[2])
+            let (gx, gy, ax, ay, az, b_code) = if let Some(ref f) = last_valid_frame {
+                (f.gyro_x, f.gyro_y, f.accel[0], f.accel[1], f.accel[2], f.button_code)
             } else {
-                (537, 537, 2048, 2048, 2048)
+                (537, 537, 2048, 2048, 2048, 0x00)
             };
 
             let _ = telem_tx.send(DriverTelemetry {
@@ -332,6 +334,7 @@ fn run_driver_loop(
                 accel_y: ay,
                 accel_z: az,
                 active_buttons,
+                button_raw: b_code,
                 cursor_enabled: processor.is_cursor_enabled(),
                 center_x: processor.center_x,
                 center_y: processor.center_y,

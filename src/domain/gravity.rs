@@ -34,53 +34,115 @@ impl Default for AccelCalibration {
 
 /// Tracks the gravity direction in the remote's transverse (Y/Z) plane and derives roll.
 ///
-/// The accelerometer also sees hand acceleration, so a sample only updates the estimate in
-/// proportion to how trustworthy it is:
-/// - its magnitude must be close to 1g (no linear acceleration), and
-/// - the gyro must have been calm recently. A decaying peak-hold of gyro activity keeps the
-///   estimate frozen through motion reversals, where angular rate crosses zero while linear
-///   acceleration peaks.
+/// Unlike naive velocity-gated filters that freeze roll estimation whenever the cursor moves,
+/// this estimator tracks roll continuously during active motion by:
+/// 1. Subtracting wrist-pivot tangential acceleration (`d(gyro)/dt`) from the lateral/normal
+///    accelerometer axes (`Y` and `Z`), since rigid-body tangential acceleration is proportional
+///    to angular acceleration rather than angular velocity.
+/// 2. Gating on high-frequency jerk (sudden whip reversals / tremor) and total `|g|` deviation
+///    rather than angular velocity, allowing smooth simultaneous wrist rotation and cursor movement.
 #[derive(Clone, Copy, Debug)]
 pub struct RollEstimator {
     calibration: AccelCalibration,
     grav_y: f32,
     grav_z: f32,
-    activity_envelope: f32,
+    prev_dx: f32,
+    prev_dy: f32,
+    has_prev: bool,
+    smooth_ddx: f32,
+    smooth_ddy: f32,
+    jerk_envelope: f32,
 }
 
 impl RollEstimator {
-    const MAX_BLEND: f32 = 0.15;
-    const MAGNITUDE_TOLERANCE_G: f32 = 0.15;
-    const ACTIVITY_FREEZE: f32 = 20.0;
-    const ACTIVITY_DECAY: f32 = 0.97;
+    const BASE_BLEND_MIN: f32 = 0.12;
+    const BASE_BLEND_ADAPTIVE: f32 = 0.28;
+    const MAGNITUDE_TOLERANCE_G: f32 = 0.14;
+    const JERK_FREEZE: f32 = 16.0;
+    const JERK_DECAY: f32 = 0.72;
+    const ACCEL_SMOOTH_ALPHA: f32 = 0.25;
+    /// Empirical wrist-pivot tangential coupling from angular acceleration (g per count/frame).
+    const TANGENTIAL_COEFF_Y: f32 = 0.040;
+    const TANGENTIAL_COEFF_Z: f32 = 0.020;
     /// Below this transverse gravity the remote points near-vertically and roll is undefined.
-    const MIN_TRANSVERSE_G: f32 = 0.5;
+    const MIN_TRANSVERSE_G: f32 = 0.45;
 
     pub fn new(calibration: AccelCalibration) -> Self {
         Self {
             calibration,
             grav_y: 0.0,
             grav_z: -1.0,
-            activity_envelope: 0.0,
+            prev_dx: 0.0,
+            prev_dy: 0.0,
+            has_prev: false,
+            smooth_ddx: 0.0,
+            smooth_ddy: 0.0,
+            jerk_envelope: 0.0,
+        }
+    }
+
+    /// Feeds one accelerometer sample along with signed 2D gyro deltas (`gyro_dx`, `gyro_dy` in raw counts).
+    /// Continuously tracks roll even while the user is actively moving the cursor.
+    pub fn update_motion(&mut self, raw_accel: [u16; 3], gyro_dx: f32, gyro_dy: f32) {
+        let (ddx, ddy) = if self.has_prev {
+            (gyro_dx - self.prev_dx, gyro_dy - self.prev_dy)
+        } else {
+            self.has_prev = true;
+            (0.0, 0.0)
+        };
+        self.prev_dx = gyro_dx;
+        self.prev_dy = gyro_dy;
+
+        // High-frequency jerk is the deviation of angular acceleration from its smoothed trend.
+        let j_x = ddx - self.smooth_ddx;
+        let j_y = ddy - self.smooth_ddy;
+        self.smooth_ddx += Self::ACCEL_SMOOTH_ALPHA * j_x;
+        self.smooth_ddy += Self::ACCEL_SMOOTH_ALPHA * j_y;
+
+        let hf_jerk = j_x.hypot(j_y);
+        self.jerk_envelope = hf_jerk.max(self.jerk_envelope * Self::JERK_DECAY);
+
+        let [x, y, z] = self.calibration.to_g(raw_accel);
+
+        // Compensate tangential acceleration induced by wrist/elbow angular acceleration.
+        let yc = y + Self::TANGENTIAL_COEFF_Y * self.smooth_ddx;
+        let zc = z - Self::TANGENTIAL_COEFF_Z * self.smooth_ddy;
+
+        let trans = yc.hypot(zc);
+        if trans < Self::MIN_TRANSVERSE_G {
+            return;
+        }
+
+        let ny = yc / trans;
+        let nz = zc / trans;
+
+        let mag_raw = (x * x + y * y + z * z).sqrt();
+        let mag_comp = (x * x + yc * yc + zc * zc).sqrt();
+        let mag_err = (mag_raw - 1.0).abs().min((mag_comp - 1.0).abs());
+        let magnitude_trust = (1.0 - mag_err / Self::MAGNITUDE_TOLERANCE_G).max(0.0);
+        let jerk_trust = (1.0 - self.jerk_envelope / Self::JERK_FREEZE).max(0.0);
+        let trans_trust = ((trans - Self::MIN_TRANSVERSE_G) / 0.30).min(1.0);
+
+        let dot = (ny * self.grav_y + nz * self.grav_z).clamp(-1.0, 1.0);
+        let angle_diff = dot.acos();
+        let base_blend = Self::BASE_BLEND_MIN
+            + Self::BASE_BLEND_ADAPTIVE * (angle_diff / 0.45).min(1.0);
+
+        let blend = base_blend * magnitude_trust * jerk_trust * trans_trust;
+
+        self.grav_y += (ny - self.grav_y) * blend;
+        self.grav_z += (nz - self.grav_z) * blend;
+
+        let norm = self.grav_y.hypot(self.grav_z);
+        if norm > 1e-5 {
+            self.grav_y /= norm;
+            self.grav_z /= norm;
         }
     }
 
     /// Feeds one accelerometer sample; `gyro_activity` is the angular-rate magnitude in raw counts.
     pub fn update(&mut self, raw_accel: [u16; 3], gyro_activity: f32) {
-        self.activity_envelope = gyro_activity.max(self.activity_envelope * Self::ACTIVITY_DECAY);
-
-        let [x, y, z] = self.calibration.to_g(raw_accel);
-        if y.hypot(z) < Self::MIN_TRANSVERSE_G {
-            return;
-        }
-
-        let magnitude = (x * x + y * y + z * z).sqrt();
-        let magnitude_trust = (1.0 - (magnitude - 1.0).abs() / Self::MAGNITUDE_TOLERANCE_G).max(0.0);
-        let calm_trust = (1.0 - self.activity_envelope / Self::ACTIVITY_FREEZE).max(0.0);
-        let blend = Self::MAX_BLEND * magnitude_trust * calm_trust;
-
-        self.grav_y += (y - self.grav_y) * blend;
-        self.grav_z += (z - self.grav_z) * blend;
+        self.update_motion(raw_accel, gyro_activity, 0.0);
     }
 
     /// Roll in radians, positive when rolled to the right.
@@ -173,5 +235,23 @@ mod tests {
             est.update([2050, lateral, 1143], rate);
         }
         assert!(est.roll_deg().abs() < 3.0, "roll corrupted to {}", est.roll_deg());
+    }
+
+    #[test]
+    fn roll_updates_dynamically_during_continuous_cursor_movement() {
+        let mut est = RollEstimator::default();
+        settle(&mut est, POINT_NORMAL);
+
+        // Continuously sweep the cursor (rate ~ 60..80 counts) while rolling 90° right without stopping
+        for i in 0..35 {
+            let dx = 70.0 * (i as f32 * 0.12).sin();
+            let dy = 50.0 * (i as f32 * 0.12).cos();
+            est.update_motion(ROLL_RIGHT_90, dx, dy);
+        }
+        assert!(
+            (est.roll_deg() - 80.0).abs() < 12.0,
+            "roll should converge to ~80° while moving continuously, got {}",
+            est.roll_deg()
+        );
     }
 }

@@ -1,6 +1,7 @@
 //! Presentation layer for the desktop UI and system tray.
 
 pub mod hotspots;
+pub mod mesh3d;
 pub mod tray;
 pub mod view;
 

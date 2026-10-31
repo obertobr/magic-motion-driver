@@ -3,6 +3,7 @@
 //! This layer contains zero OS dependencies, GUI calls, or I/O.
 
 pub mod action;
+pub mod attitude;
 pub mod button;
 pub mod config;
 pub mod gravity;
@@ -10,6 +11,7 @@ pub mod motion;
 pub mod protocol;
 
 pub use action::{Action, MediaKey, VirtualKey};
+pub use attitude::AttitudeEstimator;
 pub use button::{Button, ButtonSet};
 pub use config::Config;
 pub use gravity::{AccelCalibration, RollEstimator};

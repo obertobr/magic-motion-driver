@@ -148,15 +148,11 @@ impl MotionProcessor {
 
         // 1. Raw delta from calibrated center.
         // Base sign: (center - raw) produces intuitive direction for the LG Hillcrest gyro.
-        let mut raw_dx = self.center_x - raw_gyro_x as f32;
-        let mut raw_dy = self.center_y - raw_gyro_y as f32;
+        let body_dx = self.center_x - raw_gyro_x as f32;
+        let body_dy = self.center_y - raw_gyro_y as f32;
 
-        if self.settings.invert_x {
-            raw_dx = -raw_dx;
-        }
-        if self.settings.invert_y {
-            raw_dy = -raw_dy;
-        }
+        let mut raw_dx = if self.settings.invert_x { -body_dx } else { body_dx };
+        let mut raw_dy = if self.settings.invert_y { -body_dy } else { body_dy };
 
         // 2. Deadzone: eliminate noise at rest
         let dz = self.settings.deadzone.max(0.0);
@@ -172,9 +168,10 @@ impl MotionProcessor {
             raw_dy -= raw_dy.signum() * dz;
         }
 
-        // 3. Roll (gravity) compensation:
-        let gyro_activity = (raw_dx * raw_dx + raw_dy * raw_dy).sqrt();
-        self.roll_estimator.update(accel, gyro_activity);
+        // 3. Dynamic roll (gravity) compensation:
+        // Pass un-inverted physical body deltas so tangential wrist acceleration is compensated
+        // and roll updates continuously even while the cursor is actively moving.
+        self.roll_estimator.update_motion(accel, body_dx, body_dy);
 
         if self.settings.roll_compensation && (raw_dx != 0.0 || raw_dy != 0.0) {
             let eff_deg = self.effective_roll_deg();
@@ -453,6 +450,40 @@ mod tests {
 
         assert_eq!(cumulative_dy, 0, "tremor must not cause cumulative vertical drift");
         assert!(proc.current_roll_deg().abs() < 1.0, "roll must stay at ~0° during tremor");
+    }
+
+    #[test]
+    fn rapid_wrist_roll_updates_cursor_direction_without_stopping() {
+        let mut settings = MotionSettings::default();
+        settings.deadzone = 0.0;
+        settings.smoothing = 0.0;
+        settings.acceleration = 1.0;
+        settings.sensitivity = 1.0;
+        settings.roll_compensation = true;
+
+        let mut proc = MotionProcessor::new(settings);
+        proc.set_center(500.0, 500.0);
+
+        // Start at 0° normal pose while actively moving cursor
+        for _ in 0..20 {
+            proc.process_with_accel(540, 500, [2050, 2023, 1143]);
+        }
+        assert!(proc.current_roll_deg().abs() < 3.0);
+
+        // Twist wrist to 90° CW ([2055, 3049, 2180]) while continuously moving cursor (never stopping at 500)
+        for _ in 0..30 {
+            proc.process_with_accel(545, 485, [2055, 3049, 2180]);
+        }
+
+        assert!(
+            (proc.current_roll_deg() - 90.0).abs() < 5.0,
+            "roll should update to ~90° during active movement without stopping, got {}",
+            proc.current_roll_deg()
+        );
+
+        let (dx, dy) = proc.process_with_accel(550, 500, [2055, 3049, 2180]);
+        assert!(dy < -40, "physical upward movement at 90° roll must move cursor UP (dy < 0), got dy={dy}");
+        assert!(dx.abs() <= 5, "horizontal drift should be minimal, got dx={dx}");
     }
 }
 
