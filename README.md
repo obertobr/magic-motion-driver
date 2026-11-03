@@ -12,7 +12,7 @@
 
 <br />
 
-<img src="docs/images/tab-buttons.png" alt="LG Magic Motion Control Panel — Buttons Tab" width="720" />
+<img src="docs/images/demo.gif" alt="LG Magic Motion Air Mouse Demo" width="720" />
 
 </div>
 
