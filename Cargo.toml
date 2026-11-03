@@ -1,10 +1,15 @@
 [package]
 name = "magic-motion"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2024"
 rust-version = "1.85"
-description = "User-mode Windows driver for the LG Magic Motion remote (AN-MR200 / AN-MR100)"
-license = "MIT"
+description = "User-mode Windows driver, button remapper, and 3D IMU telemetry studio for the LG Magic Motion remote (AN-MR200 / AN-MR100)"
+repository = "https://github.com/obertobr/magic-motion-driver"
+homepage = "https://github.com/obertobr/magic-motion-driver"
+readme = "README.md"
+license = "GPL-2.0-only"
+keywords = ["lg", "magic-motion", "driver", "air-mouse", "imu"]
+categories = ["hardware-support", "gui", "os::windows-apis"]
 publish = false
 
 [lib]
