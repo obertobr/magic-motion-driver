@@ -1,21 +1,30 @@
 //! System tray icon and context menu with live status feedback.
 
-use std::sync::mpsc::Sender;
+use std::sync::mpsc::{Receiver, Sender};
+use eframe::egui;
 use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
-use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
+use tray_icon::{Icon, TrayIcon, TrayIconBuilder, TrayIconEvent};
 
+use crate::domain::i18n::Language;
 use crate::infra::driver::DriverCommand;
+use crate::presentation::i18n::get_messages;
 
 pub struct SystemTray {
     tray_icon: TrayIcon,
     status_item: MenuItem,
+    item_open: MenuItem,
+    item_toggle: MenuItem,
+    item_quit: MenuItem,
     icon_connected: Icon,
     icon_disconnected: Icon,
     last_connected: Option<bool>,
     last_port: String,
+    last_lang: Option<Language>,
     menu_open_id: tray_icon::menu::MenuId,
     menu_toggle_id: tray_icon::menu::MenuId,
     menu_quit_id: tray_icon::menu::MenuId,
+    menu_rx: Receiver<MenuEvent>,
+    tray_rx: Receiver<TrayIconEvent>,
 }
 
 impl std::fmt::Debug for SystemTray {
@@ -33,7 +42,7 @@ pub enum TrayAction {
 }
 
 impl SystemTray {
-    pub fn new() -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn new(ctx: egui::Context) -> Result<Self, Box<dyn std::error::Error>> {
         let menu = Menu::new();
 
         let status_item = MenuItem::new("Status: Desconectado", false, None);
@@ -52,6 +61,20 @@ impl SystemTray {
         menu.append(&PredefinedMenuItem::separator())?;
         menu.append(&item_quit)?;
 
+        let (menu_tx, menu_rx) = std::sync::mpsc::channel();
+        let ctx_menu = ctx.clone();
+        MenuEvent::set_event_handler(Some(move |event| {
+            let _ = menu_tx.send(event);
+            ctx_menu.request_repaint();
+        }));
+
+        let (tray_tx, tray_rx) = std::sync::mpsc::channel();
+        let ctx_tray = ctx;
+        TrayIconEvent::set_event_handler(Some(move |event| {
+            let _ = tray_tx.send(event);
+            ctx_tray.request_repaint();
+        }));
+
         let icon_connected = create_colored_tray_icon(true)?;
         let icon_disconnected = create_colored_tray_icon(false)?;
 
@@ -66,32 +89,45 @@ impl SystemTray {
         Ok(Self {
             tray_icon,
             status_item,
+            item_open,
+            item_toggle,
+            item_quit,
             icon_connected,
             icon_disconnected,
             last_connected: Some(false),
             last_port: String::new(),
+            last_lang: None,
             menu_open_id,
             menu_toggle_id,
             menu_quit_id,
+            menu_rx,
+            tray_rx,
         })
     }
 
-    /// Dynamically updates the tray icon, tooltip, and menu status text according to connection state.
-    pub fn update_status(&mut self, connected: bool, port: &str) {
-        if self.last_connected != Some(connected) || self.last_port != port {
+    /// Dynamically updates the tray icon, tooltip, and menu status text according to connection state and language.
+    pub fn update_status(&mut self, connected: bool, port: &str, lang: Language) {
+        if self.last_connected != Some(connected) || self.last_port != port || self.last_lang != Some(lang) {
             self.last_connected = Some(connected);
             self.last_port = port.to_string();
+            self.last_lang = Some(lang);
+
+            let tr = get_messages(lang);
+
+            self.item_open.set_text(tr.tray_open_panel);
+            self.item_toggle.set_text(tr.tray_toggle_cursor);
+            self.item_quit.set_text(tr.tray_quit);
 
             let (tooltip, menu_txt) = if connected {
-                let p = if port.is_empty() { "Conectado" } else { port };
+                let p = if port.is_empty() { tr.status_connected } else { port };
                 (
-                    format!("LG Magic Motion: Conectado ({p})"),
-                    format!("Status: Conectado ({p})"),
+                    format!("{}: {} ({p})", tr.app_title, tr.status_connected),
+                    format!("{}: {} ({p})", tr.conn_status, tr.status_connected),
                 )
             } else {
                 (
-                    "LG Magic Motion: Desconectado".to_string(),
-                    "Status: Desconectado".to_string(),
+                    format!("{}: {}", tr.app_title, tr.status_disconnected),
+                    format!("{}: {}", tr.conn_status, tr.status_disconnected),
                 )
             };
 
@@ -112,7 +148,7 @@ impl SystemTray {
         let mut action = None;
 
         // Drain all menu events
-        while let Ok(event) = MenuEvent::receiver().try_recv() {
+        while let Ok(event) = self.menu_rx.try_recv() {
             if event.id == self.menu_open_id {
                 action = Some(TrayAction::OpenPanel);
             } else if event.id == self.menu_toggle_id {
@@ -123,10 +159,10 @@ impl SystemTray {
         }
 
         // Drain all icon click / double click events
-        while let Ok(event) = tray_icon::TrayIconEvent::receiver().try_recv() {
+        while let Ok(event) = self.tray_rx.try_recv() {
             match event {
-                tray_icon::TrayIconEvent::Click { button: tray_icon::MouseButton::Left, button_state: tray_icon::MouseButtonState::Up, .. }
-                | tray_icon::TrayIconEvent::DoubleClick { button: tray_icon::MouseButton::Left, .. } => {
+                TrayIconEvent::Click { button: tray_icon::MouseButton::Left, button_state: tray_icon::MouseButtonState::Up, .. }
+                | TrayIconEvent::DoubleClick { button: tray_icon::MouseButton::Left, .. } => {
                     action = Some(TrayAction::OpenPanel);
                 }
                 _ => {}

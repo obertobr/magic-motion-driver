@@ -7,9 +7,11 @@ use eframe::egui::{self, Color32, Panel, Pos2, Rect, Stroke, StrokeKind, Vec2};
 use crate::domain::action::{Action, KeyShortcut, MediaKey, VirtualKey};
 use crate::domain::button::Button;
 use crate::domain::config::Config;
+use crate::domain::i18n::Language;
 use crate::infra::autostart::{is_autostart_enabled, set_autostart};
 use crate::infra::driver::{DriverCommand, DriverTelemetry};
 use crate::presentation::hotspots::{find_hotspot_at, BUTTON_HOTSPOTS, REMOTE_IMG_HEIGHT, REMOTE_IMG_WIDTH};
+use crate::presentation::i18n::{get_messages, Messages};
 use crate::presentation::tray::{SystemTray, TrayAction};
 
 #[derive(Clone, Debug)]
@@ -88,12 +90,12 @@ enum Tab {
 
 impl DriverApp {
     pub fn new(
-        _cc: &eframe::CreationContext<'_>,
+        cc: &eframe::CreationContext<'_>,
         config: Config,
         driver_cmd_tx: Sender<DriverCommand>,
         telem_rx: Option<Receiver<DriverTelemetry>>,
     ) -> Self {
-        let tray = SystemTray::new().ok();
+        let tray = SystemTray::new(cc.egui_ctx.clone()).ok();
 
         Self {
             config,
@@ -245,8 +247,10 @@ impl DriverApp {
     fn stop_recording_sensors(&mut self) {
         self.is_recording_sensors = false;
         let count = self.recorded_samples.len();
+        let lang = self.config.language();
+        let tr = get_messages(lang);
         if count == 0 {
-            self.recording_status_msg = Some(("Nenhuma amostra gravada.".to_string(), std::time::Instant::now()));
+            self.recording_status_msg = Some((tr.record_none_msg.to_string(), std::time::Instant::now()));
             return;
         }
 
@@ -286,13 +290,17 @@ impl DriverApp {
         match std::fs::write(&filename, csv.as_bytes()) {
             Ok(()) => {
                 self.recording_status_msg = Some((
-                    format!("Salvo: {filename} ({count} amostras)"),
+                    tr.recording_saved_msg(&filename, count, lang),
                     std::time::Instant::now(),
                 ));
             }
             Err(e) => {
+                let err_prefix = match lang {
+                    Language::Pt => "Erro ao salvar",
+                    Language::En => "Error saving file",
+                };
                 self.recording_status_msg = Some((
-                    format!("Erro ao salvar: {e}"),
+                    format!("{err_prefix}: {e}"),
                     std::time::Instant::now(),
                 ));
             }
@@ -300,11 +308,17 @@ impl DriverApp {
     }
 
     fn save_config(&mut self) {
+        let lang = self.config.language();
+        let tr = get_messages(lang);
         if let Err(e) = self.config.save() {
-            self.save_status = Some((format!("Erro ao salvar: {e}"), std::time::Instant::now()));
+            let err_prefix = match lang {
+                Language::Pt => "Erro ao salvar",
+                Language::En => "Error saving settings",
+            };
+            self.save_status = Some((format!("{err_prefix}: {e}"), std::time::Instant::now()));
         } else {
             let _ = self.driver_cmd_tx.send(DriverCommand::UpdateConfig(self.config.clone()));
-            self.save_status = Some(("Configurações salvas!".to_string(), std::time::Instant::now()));
+            self.save_status = Some((tr.saved_success.to_string(), std::time::Instant::now()));
         }
     }
 
@@ -318,7 +332,11 @@ impl DriverApp {
 
         // Process System Tray events & live connection status
         if let Some(ref mut tray) = self.tray {
-            tray.update_status(self.latest_telemetry.connected, &self.latest_telemetry.port_name);
+            tray.update_status(
+                self.latest_telemetry.connected,
+                &self.latest_telemetry.port_name,
+                self.config.language(),
+            );
             match tray.process_events(&self.driver_cmd_tx) {
                 Some(TrayAction::OpenPanel) => {
                     ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
@@ -357,11 +375,14 @@ impl DriverApp {
         let ctx = ui.ctx().clone();
         self.ensure_texture(&ctx);
 
+        let lang = self.config.language();
+        let tr = get_messages(lang);
+
         // Top Header Panel
         Panel::top("header").show(ui, |ui| {
             ui.add_space(6.0);
             ui.horizontal(|ui| {
-                ui.heading("LG Magic Motion Painel");
+                ui.heading(tr.app_title);
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     // Lateral direita superior: bolinha de status (verde conectado / vermelha desconectado)
@@ -379,18 +400,18 @@ impl DriverApp {
                     );
 
                     let tooltip = if self.latest_telemetry.connected {
-                        format!("Conectado ({}) - {:.0} Hz", self.latest_telemetry.port_name, self.latest_telemetry.rate_hz)
+                        tr.tooltip_connected(&self.latest_telemetry.port_name, self.latest_telemetry.rate_hz)
                     } else {
-                        "Desconectado (Aguardando receptor CP2102...)".to_string()
+                        tr.tooltip_disconnected(lang).to_string()
                     };
                     dot_response.on_hover_text(tooltip);
 
                     ui.add_space(10.0);
 
                     let (cursor_txt, cursor_color) = if self.latest_telemetry.cursor_enabled {
-                        ("Mira: ATIVA", Color32::from_rgb(40, 200, 100))
+                        (tr.cursor_active, Color32::from_rgb(40, 200, 100))
                     } else {
-                        ("Mira: PAUSADA", Color32::from_rgb(220, 100, 80))
+                        (tr.cursor_paused, Color32::from_rgb(220, 100, 80))
                     };
                     if ui.button(egui::RichText::new(cursor_txt).color(cursor_color).strong()).clicked() {
                         let _ = self.driver_cmd_tx.send(DriverCommand::ToggleCursor);
@@ -404,7 +425,7 @@ impl DriverApp {
         Panel::bottom("footer").show(ui, |ui| {
             ui.add_space(4.0);
             ui.horizontal(|ui| {
-                if ui.button("Salvar Configurações").clicked() {
+                if ui.button(tr.save_settings).clicked() {
                     self.save_config();
                 }
 
@@ -554,18 +575,18 @@ impl DriverApp {
                     ui.set_max_height(total_avail_h);
 
                     ui.horizontal(|ui| {
-                        ui.selectable_value(&mut self.active_tab, Tab::Buttons, "Botões");
-                        ui.selectable_value(&mut self.active_tab, Tab::Motion, "Movimento");
-                        ui.selectable_value(&mut self.active_tab, Tab::Settings, "Configurações");
-                        ui.selectable_value(&mut self.active_tab, Tab::Sensors, "Dados Brutos");
+                        ui.selectable_value(&mut self.active_tab, Tab::Buttons, tr.tab_buttons);
+                        ui.selectable_value(&mut self.active_tab, Tab::Motion, tr.tab_motion);
+                        ui.selectable_value(&mut self.active_tab, Tab::Settings, tr.tab_settings);
+                        ui.selectable_value(&mut self.active_tab, Tab::Sensors, tr.tab_raw_data);
                     });
                     ui.separator();
 
                     match self.active_tab {
-                        Tab::Buttons => self.render_buttons_tab(ui),
-                        Tab::Motion => self.render_motion_tab(ui),
-                        Tab::Settings => self.render_settings_tab(ui),
-                        Tab::Sensors => self.render_sensors_tab(ui),
+                        Tab::Buttons => self.render_buttons_tab(ui, tr, lang),
+                        Tab::Motion => self.render_motion_tab(ui, tr),
+                        Tab::Settings => self.render_settings_tab(ui, tr, lang),
+                        Tab::Sensors => self.render_sensors_tab(ui, tr, lang),
                     }
                 });
             });
@@ -621,8 +642,8 @@ fn render_menu_option<T: PartialEq + Clone>(
 }
 
 impl DriverApp {
-    fn render_buttons_tab(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Configurar Ação do Botão");
+    fn render_buttons_tab(&mut self, ui: &mut egui::Ui, tr: &Messages, lang: Language) {
+        ui.heading(tr.configure_button_action);
         ui.add_space(4.0);
 
         let total_w = ui.available_width();
@@ -644,17 +665,21 @@ impl DriverApp {
                     egui::Sense::hover(),
                 );
                 let hp = ui.painter().with_clip_rect(header_rect);
+                let (col_btn, col_action) = match lang {
+                    Language::Pt => ("Botão", "Ação Atual"),
+                    Language::En => ("Button", "Current Action"),
+                };
                 hp.text(
                     egui::pos2(header_rect.min.x + 8.0, header_rect.center().y),
                     egui::Align2::LEFT_CENTER,
-                    "Botão",
+                    col_btn,
                     egui::FontId::proportional(13.0),
                     Color32::WHITE,
                 );
                 hp.text(
                     egui::pos2(header_rect.min.x + 95.0, header_rect.center().y),
                     egui::Align2::LEFT_CENTER,
-                    "Ação Atual",
+                    col_action,
                     egui::FontId::proportional(13.0),
                     Color32::WHITE,
                 );
@@ -705,7 +730,7 @@ impl DriverApp {
                             painter.text(
                                 egui::pos2(row_rect.min.x + 8.0, row_rect.center().y),
                                 egui::Align2::LEFT_CENTER,
-                                format!("{b:?}"),
+                                b.label_lang(lang),
                                 egui::FontId::proportional(13.0),
                                 name_color,
                             );
@@ -713,14 +738,14 @@ impl DriverApp {
                             painter.text(
                                 egui::pos2(row_rect.min.x + 95.0, row_rect.center().y),
                                 egui::Align2::LEFT_CENTER,
-                                action.label(),
+                                action.label_lang(lang),
                                 egui::FontId::proportional(13.0),
                                 action_color,
                             );
                         }
                     });
 
-                if ui.button("Restaurar Botões Padrão").clicked() {
+                if ui.button(tr.restore_default_buttons).clicked() {
                     self.config.button_mappings = Config::default().button_mappings;
                     self.save_config();
                 }
@@ -780,7 +805,7 @@ impl DriverApp {
                     painter.text(
                         egui::pos2(rect.min.x + 10.0, rect.center().y),
                         egui::Align2::LEFT_CENTER,
-                        "⌨ Pressione a tecla ou atalho... (Clique para cancelar)",
+                        tr.shortcut_record_prompt,
                         egui::FontId::proportional(13.0),
                         Color32::from_rgb(255, 215, 70),
                     );
@@ -803,9 +828,9 @@ impl DriverApp {
                     painter.rect_filled(rect, 4.0, bg_color);
 
                     let label_text = if let Action::Shortcut(s) = new_action {
-                        format!("⌨ Atalho Personalizado: {}  (Clique para alterar)", s.label())
+                        tr.shortcut_custom_label(&s.label_lang(lang), lang)
                     } else {
-                        "⌨ Gravar Tecla ou Atalho Personalizado...".to_string()
+                        tr.shortcut_record_idle.to_string()
                     };
 
                     let text_color = if is_shortcut_active || resp.hovered() {
@@ -834,29 +859,29 @@ impl DriverApp {
                         | Action::MouseWheelDown
                 );
                 let mouse_title = if mouse_has_action {
-                    egui::RichText::new("Mouse")
+                    egui::RichText::new(tr.cat_mouse)
                         .strong()
                         .color(Color32::from_rgb(100, 190, 255))
                 } else {
-                    egui::RichText::new("Mouse").strong()
+                    egui::RichText::new(tr.cat_mouse).strong()
                 };
 
                 let keyboard_has_action = matches!(new_action, Action::Key(_));
                 let keyboard_title = if keyboard_has_action {
-                    egui::RichText::new("Teclado")
+                    egui::RichText::new(tr.cat_keyboard)
                         .strong()
                         .color(Color32::from_rgb(100, 190, 255))
                 } else {
-                    egui::RichText::new("Teclado").strong()
+                    egui::RichText::new(tr.cat_keyboard).strong()
                 };
 
                 let media_has_action = matches!(new_action, Action::Media(_));
                 let media_title = if media_has_action {
-                    egui::RichText::new("Mídia")
+                    egui::RichText::new(tr.cat_media)
                         .strong()
                         .color(Color32::from_rgb(100, 190, 255))
                 } else {
-                    egui::RichText::new("Mídia").strong()
+                    egui::RichText::new(tr.cat_media).strong()
                 };
 
                 let system_has_action = matches!(
@@ -864,11 +889,11 @@ impl DriverApp {
                     Action::ToggleCursor | Action::Recenter | Action::None
                 );
                 let system_title = if system_has_action {
-                    egui::RichText::new("Sistema")
+                    egui::RichText::new(tr.cat_system)
                         .strong()
                         .color(Color32::from_rgb(100, 190, 255))
                 } else {
-                    egui::RichText::new("Sistema").strong()
+                    egui::RichText::new(tr.cat_system).strong()
                 };
 
                 let actions_max_h = ui.available_height().max(100.0);
@@ -883,11 +908,11 @@ impl DriverApp {
                             .id_salt("cat_mouse_v2")
                             .default_open(false)
                             .show(ui, |ui| {
-                                render_menu_option(ui, &mut new_action, Action::MouseLeft, "Clique Esquerdo");
-                                render_menu_option(ui, &mut new_action, Action::MouseRight, "Clique Direito");
-                                render_menu_option(ui, &mut new_action, Action::MouseMiddle, "Clique do Meio");
-                                render_menu_option(ui, &mut new_action, Action::MouseWheelUp, "Rolar para Cima");
-                                render_menu_option(ui, &mut new_action, Action::MouseWheelDown, "Rolar para Baixo");
+                                render_menu_option(ui, &mut new_action, Action::MouseLeft, tr.mouse_left);
+                                render_menu_option(ui, &mut new_action, Action::MouseRight, tr.mouse_right);
+                                render_menu_option(ui, &mut new_action, Action::MouseMiddle, tr.mouse_middle);
+                                render_menu_option(ui, &mut new_action, Action::MouseWheelUp, tr.mouse_wheel_up);
+                                render_menu_option(ui, &mut new_action, Action::MouseWheelDown, tr.mouse_wheel_down);
                                 ui.add_space(4.0);
                             });
 
@@ -895,16 +920,16 @@ impl DriverApp {
                             .id_salt("cat_keyboard_v2")
                             .default_open(false)
                             .show(ui, |ui| {
-                                render_menu_option(ui, &mut new_action, Action::Key(VirtualKey::LeftWin), "Tecla Windows (Win)");
-                                render_menu_option(ui, &mut new_action, Action::Key(VirtualKey::Return), "Enter");
-                                render_menu_option(ui, &mut new_action, Action::Key(VirtualKey::Escape), "Esc");
-                                render_menu_option(ui, &mut new_action, Action::Key(VirtualKey::Space), "Espaço");
-                                render_menu_option(ui, &mut new_action, Action::Key(VirtualKey::Backspace), "Backspace");
-                                render_menu_option(ui, &mut new_action, Action::Key(VirtualKey::Tab), "Tab");
-                                render_menu_option(ui, &mut new_action, Action::Key(VirtualKey::Up), "Seta Cima");
-                                render_menu_option(ui, &mut new_action, Action::Key(VirtualKey::Down), "Seta Baixo");
-                                render_menu_option(ui, &mut new_action, Action::Key(VirtualKey::Left), "Seta Esquerda");
-                                render_menu_option(ui, &mut new_action, Action::Key(VirtualKey::Right), "Seta Direita");
+                                render_menu_option(ui, &mut new_action, Action::Key(VirtualKey::LeftWin), tr.key_win);
+                                render_menu_option(ui, &mut new_action, Action::Key(VirtualKey::Return), tr.key_enter);
+                                render_menu_option(ui, &mut new_action, Action::Key(VirtualKey::Escape), tr.key_esc);
+                                render_menu_option(ui, &mut new_action, Action::Key(VirtualKey::Space), tr.key_space);
+                                render_menu_option(ui, &mut new_action, Action::Key(VirtualKey::Backspace), tr.key_backspace);
+                                render_menu_option(ui, &mut new_action, Action::Key(VirtualKey::Tab), tr.key_tab);
+                                render_menu_option(ui, &mut new_action, Action::Key(VirtualKey::Up), tr.key_up);
+                                render_menu_option(ui, &mut new_action, Action::Key(VirtualKey::Down), tr.key_down);
+                                render_menu_option(ui, &mut new_action, Action::Key(VirtualKey::Left), tr.key_left);
+                                render_menu_option(ui, &mut new_action, Action::Key(VirtualKey::Right), tr.key_right);
                                 ui.add_space(4.0);
                             });
 
@@ -913,7 +938,7 @@ impl DriverApp {
                             .default_open(false)
                             .show(ui, |ui| {
                                 for mk in MediaKey::ALL {
-                                    render_menu_option(ui, &mut new_action, Action::Media(mk), mk.label());
+                                    render_menu_option(ui, &mut new_action, Action::Media(mk), mk.label_lang(lang));
                                 }
                                 ui.add_space(4.0);
                             });
@@ -922,9 +947,9 @@ impl DriverApp {
                             .id_salt("cat_system_v2")
                             .default_open(false)
                             .show(ui, |ui| {
-                                render_menu_option(ui, &mut new_action, Action::ToggleCursor, "Ativar / Pausar Mira");
-                                render_menu_option(ui, &mut new_action, Action::Recenter, "Recalibrar Centro");
-                                render_menu_option(ui, &mut new_action, Action::None, "Desativar Botão");
+                                render_menu_option(ui, &mut new_action, Action::ToggleCursor, tr.act_toggle_cursor);
+                                render_menu_option(ui, &mut new_action, Action::Recenter, tr.act_recenter);
+                                render_menu_option(ui, &mut new_action, Action::None, tr.act_disable);
                                 ui.add_space(4.0);
                             });
                     });
@@ -937,8 +962,8 @@ impl DriverApp {
         });
     }
 
-    fn render_motion_tab(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Ajustes de Movimento e Sensibilidade");
+    fn render_motion_tab(&mut self, ui: &mut egui::Ui, tr: &Messages) {
+        ui.heading(tr.motion_heading);
         ui.add_space(4.0);
 
         let mut changed = false;
@@ -949,43 +974,43 @@ impl DriverApp {
             .max_height(avail_h)
             .show(ui, |ui| {
             ui.group(|ui| {
-                ui.label(egui::RichText::new("Sensibilidade dos Eixos:").strong());
-                changed |= ui.add(egui::Slider::new(&mut self.config.motion.sensitivity, 0.05..=1.5).text("Sensibilidade Geral")).changed();
-                changed |= ui.add(egui::Slider::new(&mut self.config.motion.sensitivity_x, 0.2..=2.5).text("Multiplicador X (Yaw / Horizontal)")).changed();
-                changed |= ui.add(egui::Slider::new(&mut self.config.motion.sensitivity_y, 0.2..=2.5).text("Multiplicador Y (Pitch / Vertical)")).changed();
+                ui.label(egui::RichText::new(tr.sec_axis_sensitivity).strong());
+                changed |= ui.add(egui::Slider::new(&mut self.config.motion.sensitivity, 0.05..=1.5).text(tr.overall_sensitivity)).changed();
+                changed |= ui.add(egui::Slider::new(&mut self.config.motion.sensitivity_x, 0.2..=2.5).text(tr.multiplier_x)).changed();
+                changed |= ui.add(egui::Slider::new(&mut self.config.motion.sensitivity_y, 0.2..=2.5).text(tr.multiplier_y)).changed();
             });
 
             ui.add_space(8.0);
             ui.group(|ui| {
-                ui.label(egui::RichText::new("Precisão & Filtros:").strong());
-                changed |= ui.add(egui::Slider::new(&mut self.config.motion.deadzone, 0.0..=6.0).text("Zona Morta (Deadzone)").suffix(" pts")).changed();
-                ui.label(egui::RichText::new("Elimina micro-tremores e ruído do sensor com a mão parada.").small().color(Color32::GRAY));
+                ui.label(egui::RichText::new(tr.sec_precision_filters).strong());
+                changed |= ui.add(egui::Slider::new(&mut self.config.motion.deadzone, 0.0..=6.0).text(tr.deadzone).suffix(" pts")).changed();
+                ui.label(egui::RichText::new(tr.deadzone_desc).small().color(Color32::GRAY));
 
                 ui.add_space(4.0);
-                changed |= ui.add(egui::Slider::new(&mut self.config.motion.acceleration, 1.0..=1.8).text("Curva de Aceleração")).changed();
-                ui.label(egui::RichText::new("1.0 = Movimento linear (1:1). Acima de 1.1 dá mais agilidade a movimentos rápidos de pulso.").small().color(Color32::GRAY));
+                changed |= ui.add(egui::Slider::new(&mut self.config.motion.acceleration, 1.0..=1.8).text(tr.acceleration)).changed();
+                ui.label(egui::RichText::new(tr.acceleration_desc).small().color(Color32::GRAY));
 
                 ui.add_space(4.0);
-                changed |= ui.add(egui::Slider::new(&mut self.config.motion.smoothing, 0.0..=0.75).text("Suavização (Low-Pass Filter)")).changed();
-                ui.label(egui::RichText::new("Filtro exponencial que suaviza os passos do mouse sem adicionar atraso perceptível.").small().color(Color32::GRAY));
+                changed |= ui.add(egui::Slider::new(&mut self.config.motion.smoothing, 0.0..=0.75).text(tr.smoothing)).changed();
+                ui.label(egui::RichText::new(tr.smoothing_desc).small().color(Color32::GRAY));
             });
 
             ui.add_space(8.0);
             ui.group(|ui| {
-                ui.label(egui::RichText::new("Inversão de Eixos:").strong());
-                changed |= ui.checkbox(&mut self.config.motion.invert_x, "Inverter Eixo X (Horizontal)").changed();
-                changed |= ui.checkbox(&mut self.config.motion.invert_y, "Inverter Eixo Y (Vertical)").changed();
+                ui.label(egui::RichText::new(tr.sec_inversion).strong());
+                changed |= ui.checkbox(&mut self.config.motion.invert_x, tr.invert_x).changed();
+                changed |= ui.checkbox(&mut self.config.motion.invert_y, tr.invert_y).changed();
             });
 
             ui.add_space(8.0);
             ui.group(|ui| {
-                ui.label(egui::RichText::new("Orientação & Compensação de Rotação:").strong());
+                ui.label(egui::RichText::new(tr.sec_orientation_roll).strong());
                 changed |= ui.checkbox(
                     &mut self.config.motion.roll_compensation,
-                    "Compensar Rotação do Controle (Roll / Gravidade)",
+                    tr.roll_compensation,
                 ).changed();
                 ui.label(
-                    egui::RichText::new("Garante que apontar para cima sempre mova o mouse para cima, mesmo segurando o controle inclinado ou deitado de lado.")
+                    egui::RichText::new(tr.roll_compensation_desc)
                         .small()
                         .color(Color32::GRAY),
                 );
@@ -997,8 +1022,8 @@ impl DriverApp {
         }
     }
 
-    fn render_settings_tab(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Configurações do Sistema e Dispositivo");
+    fn render_settings_tab(&mut self, ui: &mut egui::Ui, tr: &Messages, lang: Language) {
+        ui.heading(tr.settings_heading);
         ui.add_space(4.0);
 
         let mut config_changed = false;
@@ -1008,11 +1033,34 @@ impl DriverApp {
             .auto_shrink([false; 2])
             .max_height(avail_h)
             .show(ui, |ui| {
-            // 1. Monitores & Exibição
+            // 1. Idioma da Interface
             ui.group(|ui| {
-                ui.label(egui::RichText::new("Monitores & Área de Controle:").strong());
+                ui.label(egui::RichText::new(tr.sec_language).strong());
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    ui.label(tr.language_label);
+                    let current_lang = self.config.language();
+                    egui::ComboBox::from_id_salt("settings_language_selector")
+                        .selected_text(current_lang.display_name())
+                        .show_ui(ui, |ui| {
+                            for &opt_lang in &Language::ALL {
+                                let is_selected = current_lang == opt_lang;
+                                if ui.selectable_label(is_selected, opt_lang.display_name()).clicked() && !is_selected {
+                                    self.config.language = Some(opt_lang);
+                                    config_changed = true;
+                                }
+                            }
+                        });
+                });
+            });
+
+            ui.add_space(8.0);
+
+            // 2. Monitores & Exibição
+            ui.group(|ui| {
+                ui.label(egui::RichText::new(tr.sec_monitors).strong());
                 ui.label(
-                    egui::RichText::new("Permite confinar os movimentos do Magic Remote a um monitor específico em computadores com múltiplas telas.")
+                    egui::RichText::new(tr.monitors_desc)
                         .small()
                         .color(Color32::GRAY),
                 );
@@ -1026,16 +1074,16 @@ impl DriverApp {
                             format!("Monitor {id}")
                         }
                     }
-                    None => "Todos os Monitores (Livre)".to_string(),
+                    None => tr.all_monitors.to_string(),
                 };
 
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
-                    ui.label("Restringir a:");
+                    ui.label(tr.restrict_to);
                     egui::ComboBox::from_id_salt("settings_monitor_selector")
                         .selected_text(&current_monitor_label)
                         .show_ui(ui, |ui| {
-                            if ui.selectable_label(self.config.target_monitor.is_none(), "Todos os Monitores (Livre)").clicked() && self.config.target_monitor.is_some() {
+                            if ui.selectable_label(self.config.target_monitor.is_none(), tr.all_monitors).clicked() && self.config.target_monitor.is_some() {
                                 self.config.target_monitor = None;
                                 config_changed = true;
                             }
@@ -1053,17 +1101,17 @@ impl DriverApp {
 
             ui.add_space(8.0);
 
-            // 2. Sistema & Inicialização
+            // 3. Sistema & Inicialização
             ui.group(|ui| {
-                ui.label(egui::RichText::new("Sistema & Inicialização:").strong());
+                ui.label(egui::RichText::new(tr.sec_system_startup).strong());
                 let mut autostart = is_autostart_enabled();
-                if ui.checkbox(&mut autostart, "Iniciar automaticamente junto com o Windows").changed() {
+                if ui.checkbox(&mut autostart, tr.autostart_checkbox).changed() {
                     let _ = set_autostart(autostart);
                     self.config.auto_start = autostart;
                     self.save_config();
                 }
                 ui.label(
-                    egui::RichText::new("Ao fechar esta janela no 'X', o driver continuará em segundo plano na bandeja do sistema.")
+                    egui::RichText::new(tr.autostart_desc)
                         .small()
                         .color(Color32::GRAY),
                 );
@@ -1071,11 +1119,11 @@ impl DriverApp {
 
             ui.add_space(8.0);
 
-            // 3. Conexão & Porta Serial
+            // 4. Conexão & Porta Serial
             ui.group(|ui| {
-                ui.label(egui::RichText::new("Conexão e Porta Serial (COM):").strong());
+                ui.label(egui::RichText::new(tr.sec_connection_com).strong());
                 ui.label(
-                    egui::RichText::new("Por padrão, o driver detecta automaticamente a porta do receptor CP2102 da LG.")
+                    egui::RichText::new(tr.connection_desc)
                         .small()
                         .color(Color32::GRAY),
                 );
@@ -1084,19 +1132,19 @@ impl DriverApp {
                 available_ports.sort();
 
                 let current_port_label = match &self.config.port_override {
-                    Some(p) if !p.trim().is_empty() => format!("Manual: {p}"),
-                    _ => "Automático (Auto-detectar receptor CP2102)".to_string(),
+                    Some(p) if !p.trim().is_empty() => format!("{}: {p}", match lang { Language::Pt => "Manual", Language::En => "Manual" }),
+                    _ => tr.port_auto.to_string(),
                 };
 
                 let mut port_changed = false;
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
-                    ui.label("Modo da Porta:");
+                    ui.label(tr.port_mode);
                     egui::ComboBox::from_id_salt("settings_port_selector")
                         .selected_text(&current_port_label)
                         .show_ui(ui, |ui| {
                             let is_auto = self.config.port_override.is_none();
-                            if ui.selectable_label(is_auto, "Automático (Auto-detectar receptor CP2102)").clicked() && !is_auto {
+                            if ui.selectable_label(is_auto, tr.port_auto).clicked() && !is_auto {
                                 self.config.port_override = None;
                                 port_changed = true;
                             }
@@ -1105,7 +1153,7 @@ impl DriverApp {
                                 ui.separator();
                                 for port in &available_ports {
                                     let is_selected = self.config.port_override.as_deref() == Some(port.as_str());
-                                    if ui.selectable_label(is_selected, format!("Forçar {port}")).clicked() && !is_selected {
+                                    if ui.selectable_label(is_selected, format!("{} {port}", tr.port_force_prefix)).clicked() && !is_selected {
                                         self.config.port_override = Some(port.clone());
                                         port_changed = true;
                                     }
@@ -1121,48 +1169,42 @@ impl DriverApp {
 
             ui.add_space(8.0);
 
-            // 4. Calibração de Ponto Neutro (Drift do Giroscópio)
+            // 5. Calibração de Ponto Neutro (Drift do Giroscópio)
             ui.group(|ui| {
-                ui.label(egui::RichText::new("Calibração de Ponto Neutro (Zero do Giroscópio):").strong());
+                ui.label(egui::RichText::new(tr.sec_gyro_calibration).strong());
                 ui.label(
-                    egui::RichText::new(
-                        "O giroscópio mede a velocidade angular da sua mão. Se com o controle parado sobre a mesa \
-                        o cursor do mouse estiver se deslocando vagarosamente sozinho (drift), coloque o controle \
-                        imóvel sobre uma superfície plana e clique em 'Calibrar Ponto Neutro Atual'.",
-                    )
-                    .small()
-                    .color(Color32::GRAY),
+                    egui::RichText::new(tr.gyro_calibration_desc)
+                        .small()
+                        .color(Color32::GRAY),
                 );
 
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
-                    ui.label(format!(
-                        "Centro calibrado atual: X={:.1}, Y={:.1} (Padrão de fábrica: 537.0)",
-                        self.latest_telemetry.center_x, self.latest_telemetry.center_y
+                    ui.label(tr.center_calibrated_label(
+                        self.latest_telemetry.center_x, self.latest_telemetry.center_y, lang
                     ));
                 });
 
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
-                    if ui.button("Calibrar Ponto Neutro Atual").clicked() {
+                    if ui.button(tr.calibrate_now_btn).clicked() {
                         let _ = self.driver_cmd_tx.send(DriverCommand::Recenter);
                         self.attitude.recenter();
                         self.remote_yaw = 0.0;
                         self.remote_pitch = 0.0;
                         self.remote_roll = 0.0;
                         self.calibration_feedback = Some((
-                            format!(
-                                "Calibrado com a posição atual (X={}, Y={})!",
-                                self.latest_telemetry.gyro_x, self.latest_telemetry.gyro_y
+                            tr.calibrated_success_msg(
+                                self.latest_telemetry.gyro_x, self.latest_telemetry.gyro_y, lang
                             ),
                             std::time::Instant::now(),
                         ));
                     }
 
-                    if ui.button("Restaurar Centro Padrão (537)").clicked() {
+                    if ui.button(tr.restore_center_btn).clicked() {
                         let _ = self.driver_cmd_tx.send(DriverCommand::ResetCenter);
                         self.calibration_feedback = Some((
-                            "Centro restaurado para o padrão de hardware (537.0).".to_string(),
+                            tr.center_restored_msg.to_string(),
                             std::time::Instant::now(),
                         ));
                     }
@@ -1178,16 +1220,16 @@ impl DriverApp {
 
             ui.add_space(8.0);
 
-            // 5. Restauração de Fábrica
+            // 6. Restauração de Fábrica
             ui.group(|ui| {
-                ui.label(egui::RichText::new("Restaurar Padrões:").strong());
+                ui.label(egui::RichText::new(tr.sec_restore_defaults).strong());
                 ui.label(
-                    egui::RichText::new("Restaura todos os mapeamentos de botões, sensibilidade e opções para as configurações de fábrica.")
+                    egui::RichText::new(tr.restore_defaults_desc)
                         .small()
                         .color(Color32::GRAY),
                 );
                 ui.add_space(4.0);
-                if ui.button("Restaurar Todas as Configurações de Fábrica").clicked() {
+                if ui.button(tr.restore_defaults_btn).clicked() {
                     self.config = Config::default();
                     self.save_config();
                     let _ = self.driver_cmd_tx.send(DriverCommand::ResetCenter);
@@ -1200,8 +1242,8 @@ impl DriverApp {
         }
     }
 
-    fn render_sensors_tab(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Dados Brutos do Controle em Tempo Real");
+    fn render_sensors_tab(&mut self, ui: &mut egui::Ui, tr: &Messages, lang: Language) {
+        ui.heading(tr.raw_data_heading);
         ui.add_space(4.0);
 
         let t = self.latest_telemetry.clone();
@@ -1214,11 +1256,11 @@ impl DriverApp {
             // 1. Conexão & Telemetria
             ui.group(|ui| {
                 ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("Status da Conexão:").strong());
+                    ui.label(egui::RichText::new(tr.conn_status).strong());
                     if t.connected {
-                        ui.label(egui::RichText::new("CONECTADO").color(Color32::from_rgb(40, 220, 100)).strong());
+                        ui.label(egui::RichText::new(tr.status_connected).color(Color32::from_rgb(40, 220, 100)).strong());
                     } else {
-                        ui.label(egui::RichText::new("DESCONECTADO").color(Color32::from_rgb(230, 60, 60)).strong());
+                        ui.label(egui::RichText::new(tr.status_disconnected).color(Color32::from_rgb(230, 60, 60)).strong());
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.label(egui::RichText::new(format!("{:.1} Hz (~{:.1} ms)", t.rate_hz, if t.rate_hz > 0.0 { 1000.0 / t.rate_hz } else { 0.0 })).strong());
@@ -1226,10 +1268,10 @@ impl DriverApp {
                 });
 
                 ui.horizontal(|ui| {
-                    let port_txt = if t.port_name.is_empty() { "Nenhuma" } else { &t.port_name };
-                    ui.label(format!("Porta COM: {port_txt}"));
+                    let port_txt = if t.port_name.is_empty() { tr.port_none } else { &t.port_name };
+                    ui.label(format!("{} {port_txt}", tr.com_port_prefix));
                     ui.separator();
-                    ui.label(format!("Inclinação (Roll): {:.1}°", t.roll_deg));
+                    ui.label(format!("{} {:.1}°", tr.tilt_roll, t.roll_deg));
                 });
             });
 
@@ -1241,7 +1283,7 @@ impl DriverApp {
                 cols[0].group(|ui| {
                     ui.set_min_height(165.0);
                     ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new("Giroscópio").strong());
+                        ui.label(egui::RichText::new(tr.gyroscope).strong());
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             let gyro_mag = ((t.gyro_dx * t.gyro_dx + t.gyro_dy * t.gyro_dy) as f32).sqrt();
                             ui.label(
@@ -1256,7 +1298,7 @@ impl DriverApp {
                     let delta_x_str = format!("Delta: {:+3}", t.gyro_dx);
                     draw_bipolar_slide(
                         ui,
-                        "Eixo X (Yaw):",
+                        tr.gyro_axis_x,
                         t.gyro_x as f32,
                         t.center_x,
                         350.0,
@@ -1268,7 +1310,7 @@ impl DriverApp {
                     let delta_y_val = format!("Delta: {:+3}", t.gyro_dy);
                     draw_bipolar_slide(
                         ui,
-                        "Eixo Y (Pitch):",
+                        tr.gyro_axis_y,
                         t.gyro_y as f32,
                         t.center_y,
                         350.0,
@@ -1278,8 +1320,12 @@ impl DriverApp {
                     );
 
                     ui.add_space(6.0);
+                    let (lbl_cx, lbl_cy) = match lang {
+                        Language::Pt => ("Centro X", "Centro Y"),
+                        Language::En => ("Center X", "Center Y"),
+                    };
                     ui.label(
-                        egui::RichText::new(format!("Centro X: {:.0}  |  Centro Y: {:.0}", t.center_x, t.center_y))
+                        egui::RichText::new(format!("{lbl_cx}: {:.0}  |  {lbl_cy}: {:.0}", t.center_x, t.center_y))
                             .small()
                             .color(Color32::from_rgb(120, 135, 155)),
                     );
@@ -1293,7 +1339,7 @@ impl DriverApp {
                     let total_g = (g_x * g_x + g_y * g_y + g_z * g_z).sqrt();
 
                     ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new("Acelerômetro").strong());
+                        ui.label(egui::RichText::new(tr.accelerometer).strong());
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             let g_color = if (total_g - 1.0).abs() < 0.15 {
                                 Color32::from_rgb(40, 220, 100)
@@ -1307,7 +1353,7 @@ impl DriverApp {
 
                     draw_bipolar_slide(
                         ui,
-                        "Acel X (Frente):",
+                        tr.accel_axis_x,
                         t.accel_x as f32,
                         2055.0,
                         1000.0,
@@ -1318,7 +1364,7 @@ impl DriverApp {
 
                     draw_bipolar_slide(
                         ui,
-                        "Acel Y (Lateral):",
+                        tr.accel_axis_y,
                         t.accel_y as f32,
                         2012.0,
                         1000.0,
@@ -1329,7 +1375,7 @@ impl DriverApp {
 
                     draw_bipolar_slide(
                         ui,
-                        "Acel Z (Botões):",
+                        tr.accel_axis_z,
                         t.accel_z as f32,
                         2180.0,
                         1000.0,
@@ -1345,14 +1391,14 @@ impl DriverApp {
             // 3. Gráfico de Sensores com Toggles Individuais (em cima do 3D)
             ui.group(|ui| {
                 ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("Gráfico de Sensores").strong());
+                    ui.label(egui::RichText::new(tr.sensor_graph).strong());
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         // 1. Botão de Gravação (extrema direita)
                         if self.is_recording_sensors {
                             if ui
                                 .button(
-                                    egui::RichText::new("⏹ Parar e Salvar")
+                                    egui::RichText::new(tr.record_stop_btn)
                                         .color(Color32::from_rgb(255, 110, 110))
                                         .small(),
                                 )
@@ -1362,8 +1408,8 @@ impl DriverApp {
                             }
                         } else {
                             if ui
-                                .button(egui::RichText::new("⏺ Gravar Dados").small())
-                                .on_hover_text("Inicia a gravação de todas as leituras a ~111 Hz em arquivo CSV")
+                                .button(egui::RichText::new(tr.record_start_btn).small())
+                                .on_hover_text(tr.record_start_tooltip)
                                 .clicked()
                             {
                                 self.start_recording_sensors();
@@ -1373,7 +1419,7 @@ impl DriverApp {
                         // 2. Botão com ícone de pasta sem texto logo ao lado do botão de gravar
                         if ui
                             .button(egui::RichText::new("📂").size(13.0))
-                            .on_hover_text("Abrir pasta onde as gravações CSV são salvas")
+                            .on_hover_text(tr.record_folder_tooltip)
                             .clicked()
                         {
                             let _ = std::process::Command::new("explorer").arg(".").spawn();
@@ -1388,7 +1434,7 @@ impl DriverApp {
                                 .unwrap_or(0.0);
 
                             ui.label(
-                                egui::RichText::new(format!("● Gravando ({count} amostras, {elapsed:.1}s)"))
+                                egui::RichText::new(tr.recording_active_msg(count, elapsed, lang))
                                     .color(Color32::from_rgb(255, 80, 80))
                                     .strong()
                                     .small(),
@@ -1407,12 +1453,12 @@ impl DriverApp {
                 ui.add_space(3.0);
 
                 ui.horizontal_wrapped(|ui| {
-                    ui.label(egui::RichText::new("Canais:").small().color(Color32::from_rgb(160, 175, 200)));
-                    ui.checkbox(&mut self.osc_gyro_x, egui::RichText::new("Giro X (Yaw)").color(Color32::from_rgb(0, 210, 255)).small());
-                    ui.checkbox(&mut self.osc_gyro_y, egui::RichText::new("Giro Y (Pitch)").color(Color32::from_rgb(255, 195, 30)).small());
-                    ui.checkbox(&mut self.osc_accel_x, egui::RichText::new("Acel X (Frente)").color(Color32::from_rgb(244, 63, 94)).small());
-                    ui.checkbox(&mut self.osc_accel_y, egui::RichText::new("Acel Y (Lateral)").color(Color32::from_rgb(34, 197, 94)).small());
-                    ui.checkbox(&mut self.osc_accel_z, egui::RichText::new("Acel Z (Botões)").color(Color32::from_rgb(14, 165, 233)).small());
+                    ui.label(egui::RichText::new(tr.channels).small().color(Color32::from_rgb(160, 175, 200)));
+                    ui.checkbox(&mut self.osc_gyro_x, egui::RichText::new(tr.channel_gyro_x).color(Color32::from_rgb(0, 210, 255)).small());
+                    ui.checkbox(&mut self.osc_gyro_y, egui::RichText::new(tr.channel_gyro_y).color(Color32::from_rgb(255, 195, 30)).small());
+                    ui.checkbox(&mut self.osc_accel_x, egui::RichText::new(tr.channel_accel_x).color(Color32::from_rgb(244, 63, 94)).small());
+                    ui.checkbox(&mut self.osc_accel_y, egui::RichText::new(tr.channel_accel_y).color(Color32::from_rgb(34, 197, 94)).small());
+                    ui.checkbox(&mut self.osc_accel_z, egui::RichText::new(tr.channel_accel_z).color(Color32::from_rgb(14, 165, 233)).small());
                 });
 
                 ui.add_space(4.0);
@@ -1444,6 +1490,7 @@ impl DriverApp {
                 &mut self.remote_yaw,
                 &mut self.remote_pitch,
                 &mut self.remote_roll,
+                tr,
             );
 
             ui.add_space(6.0);
@@ -1451,7 +1498,7 @@ impl DriverApp {
             // 5. Botão Pressionado com Hexadecimal Bruto (Simplificado)
             ui.group(|ui| {
                 ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("Botão Pressionado:").strong());
+                    ui.label(egui::RichText::new(tr.pressed_button).strong());
 
                     let hex_color = if t.button_raw != 0 {
                         Color32::from_rgb(0, 255, 180)
@@ -1470,11 +1517,11 @@ impl DriverApp {
                     ui.separator();
 
                     if t.active_buttons.is_empty() {
-                        ui.label(egui::RichText::new("Nenhum botão pressionado").color(Color32::GRAY));
+                        ui.label(egui::RichText::new(tr.no_button_pressed).color(Color32::GRAY));
                     } else {
                         for b in t.active_buttons.iter() {
                             ui.label(
-                                egui::RichText::new(format!("● {:?}", b))
+                                egui::RichText::new(format!("● {}", b.label_lang(lang)))
                                     .color(Color32::from_rgb(0, 255, 180))
                                     .strong(),
                             );
@@ -1493,14 +1540,15 @@ fn draw_3d_orientation_viewer(
     remote_yaw: &mut f32,
     remote_pitch: &mut f32,
     remote_roll: &mut f32,
+    tr: &Messages,
 ) {
     ui.group(|ui| {
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("Visualização 3D").strong());
+            ui.label(egui::RichText::new(tr.view_3d).strong());
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui
-                    .button(egui::RichText::new("⟲ Centralizar").small())
-                    .on_hover_text("Define a posição física atual do controle como centro neutro de referência")
+                    .button(egui::RichText::new(tr.center_3d_btn).small())
+                    .on_hover_text(tr.center_3d_tooltip)
                     .clicked()
                 {
                     attitude.recenter();

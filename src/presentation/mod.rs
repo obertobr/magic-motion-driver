@@ -1,9 +1,12 @@
 //! Presentation layer for the desktop UI and system tray.
 
 pub mod hotspots;
+pub mod i18n;
 pub mod mesh3d;
 pub mod tray;
 pub mod view;
+
+pub use i18n::{get_messages, Messages};
 
 use eframe::egui::{self, ViewportBuilder};
 

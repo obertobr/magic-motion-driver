@@ -52,6 +52,40 @@ impl Button {
         self as usize
     }
 
+    pub const fn label(self) -> &'static str {
+        self.label_lang(crate::domain::i18n::Language::Pt)
+    }
+
+    pub const fn label_lang(self, lang: crate::domain::i18n::Language) -> &'static str {
+        match (lang, self) {
+            (crate::domain::i18n::Language::Pt, Button::Power) => "Power",
+            (crate::domain::i18n::Language::Pt, Button::Home) => "Home",
+            (crate::domain::i18n::Language::Pt, Button::Up) => "Seta Cima",
+            (crate::domain::i18n::Language::Pt, Button::Down) => "Seta Baixo",
+            (crate::domain::i18n::Language::Pt, Button::Left) => "Seta Esquerda",
+            (crate::domain::i18n::Language::Pt, Button::Right) => "Seta Direita",
+            (crate::domain::i18n::Language::Pt, Button::Ok) => "OK (Scroll)",
+            (crate::domain::i18n::Language::Pt, Button::VolumeUp) => "Volume +",
+            (crate::domain::i18n::Language::Pt, Button::VolumeDown) => "Volume -",
+            (crate::domain::i18n::Language::Pt, Button::ChannelUp) => "Canal +",
+            (crate::domain::i18n::Language::Pt, Button::ChannelDown) => "Canal -",
+            (crate::domain::i18n::Language::Pt, Button::Mute) => "Mudo",
+
+            (crate::domain::i18n::Language::En, Button::Power) => "Power",
+            (crate::domain::i18n::Language::En, Button::Home) => "Home",
+            (crate::domain::i18n::Language::En, Button::Up) => "Up Arrow",
+            (crate::domain::i18n::Language::En, Button::Down) => "Down Arrow",
+            (crate::domain::i18n::Language::En, Button::Left) => "Left Arrow",
+            (crate::domain::i18n::Language::En, Button::Right) => "Right Arrow",
+            (crate::domain::i18n::Language::En, Button::Ok) => "OK (Scroll)",
+            (crate::domain::i18n::Language::En, Button::VolumeUp) => "Volume +",
+            (crate::domain::i18n::Language::En, Button::VolumeDown) => "Volume -",
+            (crate::domain::i18n::Language::En, Button::ChannelUp) => "Channel +",
+            (crate::domain::i18n::Language::En, Button::ChannelDown) => "Channel -",
+            (crate::domain::i18n::Language::En, Button::Mute) => "Mute",
+        }
+    }
+
     const fn bit(self) -> u16 {
         1 << self as u16
     }

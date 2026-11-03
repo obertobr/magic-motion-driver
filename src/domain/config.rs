@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use super::action::{Action, MediaKey, VirtualKey};
 use super::button::Button;
+use super::i18n::{detect_system_language, Language};
 use super::motion::MotionSettings;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -65,6 +66,7 @@ pub struct Config {
     pub port_override: Option<String>,
     pub auto_start: bool,
     pub target_monitor: Option<usize>,
+    pub language: Option<Language>,
 }
 
 impl Default for Config {
@@ -89,11 +91,16 @@ impl Default for Config {
             port_override: None,
             auto_start: false,
             target_monitor: None,
+            language: None,
         }
     }
 }
 
 impl Config {
+    pub fn language(&self) -> Language {
+        self.language.unwrap_or_else(detect_system_language)
+    }
+
     pub fn get_action(&self, button: Button) -> Action {
         self.button_mappings.get(&button).copied().unwrap_or(Action::None)
     }
@@ -169,10 +176,27 @@ mod tests {
 
     #[test]
     fn config_persists_target_monitor() {
-        let mut cfg = Config::default();
-        cfg.target_monitor = Some(2);
+        let cfg = Config {
+            target_monitor: Some(2),
+            ..Default::default()
+        };
         let s = toml::to_string_pretty(&cfg).expect("serialize config with monitor");
         let parsed: Config = toml::from_str(&s).expect("deserialize config with monitor");
         assert_eq!(parsed.target_monitor, Some(2));
+    }
+
+    #[test]
+    fn config_persists_language() {
+        let mut cfg = Config::default();
+        assert_eq!(cfg.language, None);
+        // Language fallback resolves to system language
+        let default_lang = cfg.language();
+        assert!(default_lang == Language::Pt || default_lang == Language::En);
+
+        cfg.language = Some(Language::Pt);
+        let s = toml::to_string_pretty(&cfg).expect("serialize config with language");
+        let parsed: Config = toml::from_str(&s).expect("deserialize config with language");
+        assert_eq!(parsed.language, Some(Language::Pt));
+        assert_eq!(parsed.language(), Language::Pt);
     }
 }
