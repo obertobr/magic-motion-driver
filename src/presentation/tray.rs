@@ -42,7 +42,10 @@ pub enum TrayAction {
 }
 
 impl SystemTray {
-    pub fn new(ctx: egui::Context) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn new(
+        ctx: egui::Context,
+        driver_cmd_tx: Sender<DriverCommand>,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         let menu = Menu::new();
 
         let status_item = MenuItem::new("Status: Desconectado", false, None);
@@ -63,16 +66,43 @@ impl SystemTray {
 
         let (menu_tx, menu_rx) = std::sync::mpsc::channel();
         let ctx_menu = ctx.clone();
-        MenuEvent::set_event_handler(Some(move |event| {
-            let _ = menu_tx.send(event);
-            ctx_menu.request_repaint();
+        let open_id_cb = menu_open_id.clone();
+        let toggle_id_cb = menu_toggle_id.clone();
+        let quit_id_cb = menu_quit_id.clone();
+        MenuEvent::set_event_handler(Some(move |event: MenuEvent| {
+            if event.id == quit_id_cb {
+                let _ = driver_cmd_tx.send(DriverCommand::Stop);
+                std::process::exit(0);
+            } else if event.id == toggle_id_cb {
+                let _ = driver_cmd_tx.send(DriverCommand::ToggleCursor);
+                ctx_menu.request_repaint();
+            } else if event.id == open_id_cb {
+                ctx_menu.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                ctx_menu.send_viewport_cmd(egui::ViewportCommand::Focus);
+                let _ = menu_tx.send(event);
+                ctx_menu.request_repaint();
+            }
         }));
 
         let (tray_tx, tray_rx) = std::sync::mpsc::channel();
         let ctx_tray = ctx;
-        TrayIconEvent::set_event_handler(Some(move |event| {
-            let _ = tray_tx.send(event);
-            ctx_tray.request_repaint();
+        TrayIconEvent::set_event_handler(Some(move |event: TrayIconEvent| {
+            if matches!(
+                event,
+                TrayIconEvent::Click {
+                    button: tray_icon::MouseButton::Left,
+                    button_state: tray_icon::MouseButtonState::Up,
+                    ..
+                } | TrayIconEvent::DoubleClick {
+                    button: tray_icon::MouseButton::Left,
+                    ..
+                }
+            ) {
+                ctx_tray.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                ctx_tray.send_viewport_cmd(egui::ViewportCommand::Focus);
+                let _ = tray_tx.send(event);
+                ctx_tray.request_repaint();
+            }
         }));
 
         let icon_connected = create_colored_tray_icon(true)?;

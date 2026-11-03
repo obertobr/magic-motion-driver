@@ -95,7 +95,7 @@ impl DriverApp {
         driver_cmd_tx: Sender<DriverCommand>,
         telem_rx: Option<Receiver<DriverTelemetry>>,
     ) -> Self {
-        let tray = SystemTray::new(cc.egui_ctx.clone()).ok();
+        let tray = SystemTray::new(cc.egui_ctx.clone(), driver_cmd_tx.clone()).ok();
 
         Self {
             config,
