@@ -1102,9 +1102,6 @@ impl DriverApp {
                     let port_txt = if t.port_name.is_empty() { "Nenhuma" } else { &t.port_name };
                     ui.label(format!("Porta COM: {port_txt}"));
                     ui.separator();
-                    let cursor_status = if t.cursor_enabled { "Ativa" } else { "Pausada" };
-                    ui.label(format!("Mira: {cursor_status}"));
-                    ui.separator();
                     ui.label(format!("Inclinação (Roll): {:.1}°", t.roll_deg));
                 });
             });
@@ -1115,9 +1112,9 @@ impl DriverApp {
             ui.columns(2, |cols| {
                 // Quadrado 1: Giroscópio
                 cols[0].group(|ui| {
-                    ui.set_min_height(195.0);
+                    ui.set_min_height(165.0);
                     ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new("Giroscópio (Angular)").strong());
+                        ui.label(egui::RichText::new("Giroscópio").strong());
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             let gyro_mag = ((t.gyro_dx * t.gyro_dx + t.gyro_dy * t.gyro_dy) as f32).sqrt();
                             ui.label(
@@ -1127,11 +1124,6 @@ impl DriverApp {
                             );
                         });
                     });
-                    ui.label(
-                        egui::RichText::new("Mede rotação instantânea (Yaw / Pitch). Repouso ~537.")
-                            .small()
-                            .color(Color32::GRAY),
-                    );
                     ui.add_space(6.0);
 
                     let delta_x_str = format!("Delta: {:+3}", t.gyro_dx);
@@ -1168,13 +1160,13 @@ impl DriverApp {
 
                 // Quadrado 2: Acelerômetro
                 cols[1].group(|ui| {
-                    ui.set_min_height(195.0);
+                    ui.set_min_height(165.0);
                     let [g_x, g_y, g_z] = crate::domain::gravity::AccelCalibration::LG_AN_MR200
                         .to_g([t.accel_x, t.accel_y, t.accel_z]);
                     let total_g = (g_x * g_x + g_y * g_y + g_z * g_z).sqrt();
 
                     ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new("Acelerômetro (Gravidade 3D)").strong());
+                        ui.label(egui::RichText::new("Acelerômetro").strong());
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             let g_color = if (total_g - 1.0).abs() < 0.15 {
                                 Color32::from_rgb(40, 220, 100)
@@ -1184,11 +1176,6 @@ impl DriverApp {
                             ui.label(egui::RichText::new(format!("{:.2}g", total_g)).color(g_color).strong());
                         });
                     });
-                    ui.label(
-                        egui::RichText::new("Mede a aceleração nos 3 eixos (ADC 12-bit calibrado).")
-                            .small()
-                            .color(Color32::GRAY),
-                    );
                     ui.add_space(4.0);
 
                     draw_bipolar_slide(
@@ -1228,14 +1215,9 @@ impl DriverApp {
 
             ui.add_space(6.0);
 
-            // 3. Gráfico Osciloscópio Multicanal com Toggles Individuais (em cima do 3D)
+            // 3. Gráfico de Sensores com Toggles Individuais (em cima do 3D)
             ui.group(|ui| {
-                ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("Gráfico Osciloscópio Multicanal (Tempo Real):").strong());
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.label(egui::RichText::new("Visualização Unificada").color(Color32::GRAY).small());
-                    });
-                });
+                ui.label(egui::RichText::new("Gráfico de Sensores").strong());
                 ui.add_space(3.0);
 
                 ui.horizontal_wrapped(|ui| {
@@ -1280,10 +1262,10 @@ impl DriverApp {
 
             ui.add_space(6.0);
 
-            // 5. Estado Físico dos Botões com Hexadecimal Bruto (Simplificado)
+            // 5. Botão Pressionado com Hexadecimal Bruto (Simplificado)
             ui.group(|ui| {
                 ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("Estado Físico dos Botões:").strong());
+                    ui.label(egui::RichText::new("Botão Pressionado:").strong());
 
                     let hex_color = if t.button_raw != 0 {
                         Color32::from_rgb(0, 255, 180)
@@ -1302,7 +1284,7 @@ impl DriverApp {
                     ui.separator();
 
                     if t.active_buttons.is_empty() {
-                        ui.label(egui::RichText::new("Nenhum botão pressionado (repouso)").color(Color32::GRAY));
+                        ui.label(egui::RichText::new("Nenhum botão pressionado").color(Color32::GRAY));
                     } else {
                         for b in t.active_buttons.iter() {
                             ui.label(
@@ -1328,7 +1310,7 @@ fn draw_3d_orientation_viewer(
 ) {
     ui.group(|ui| {
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("Orientação Espacial 3D (Simulação em Tempo Real):").strong());
+            ui.label(egui::RichText::new("Visualização 3D").strong());
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui
                     .button(egui::RichText::new("⟲ Centralizar").small())
@@ -1349,24 +1331,6 @@ fn draw_3d_orientation_viewer(
                     .strong(),
                 );
             });
-        });
-
-        ui.horizontal(|ui| {
-            ui.label(
-                egui::RichText::new(format!(
-                    "Modelo: {} ({} vértices, {} faces)",
-                    mesh_3d.name,
-                    mesh_3d.vertices.len(),
-                    mesh_3d.triangles.len()
-                ))
-                .small()
-                .color(Color32::from_rgb(0, 210, 255)),
-            );
-            ui.label(
-                egui::RichText::new("• Suporta carregar 'remote.obj' da pasta do executável")
-                    .small()
-                    .color(Color32::from_rgb(130, 145, 170)),
-            );
         });
         ui.add_space(4.0);
 

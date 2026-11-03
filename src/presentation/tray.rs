@@ -15,7 +15,6 @@ pub struct SystemTray {
     last_port: String,
     menu_open_id: tray_icon::menu::MenuId,
     menu_toggle_id: tray_icon::menu::MenuId,
-    menu_recenter_id: tray_icon::menu::MenuId,
     menu_quit_id: tray_icon::menu::MenuId,
 }
 
@@ -40,19 +39,16 @@ impl SystemTray {
         let status_item = MenuItem::new("Status: Desconectado", false, None);
         let item_open = MenuItem::new("Abrir Painel", true, None);
         let item_toggle = MenuItem::new("Ativar / Pausar Mira", true, None);
-        let item_recenter = MenuItem::new("Calibrar Ponto Neutro (Drift)", true, None);
         let item_quit = MenuItem::new("Sair", true, None);
 
         let menu_open_id = item_open.id().clone();
         let menu_toggle_id = item_toggle.id().clone();
-        let menu_recenter_id = item_recenter.id().clone();
         let menu_quit_id = item_quit.id().clone();
 
         menu.append(&status_item)?;
         menu.append(&PredefinedMenuItem::separator())?;
         menu.append(&item_open)?;
         menu.append(&item_toggle)?;
-        menu.append(&item_recenter)?;
         menu.append(&PredefinedMenuItem::separator())?;
         menu.append(&item_quit)?;
 
@@ -76,7 +72,6 @@ impl SystemTray {
             last_port: String::new(),
             menu_open_id,
             menu_toggle_id,
-            menu_recenter_id,
             menu_quit_id,
         })
     }
@@ -122,8 +117,6 @@ impl SystemTray {
                 action = Some(TrayAction::OpenPanel);
             } else if event.id == self.menu_toggle_id {
                 let _ = driver_cmd_tx.send(DriverCommand::ToggleCursor);
-            } else if event.id == self.menu_recenter_id {
-                let _ = driver_cmd_tx.send(DriverCommand::Recenter);
             } else if event.id == self.menu_quit_id {
                 action = Some(TrayAction::Quit);
             }
