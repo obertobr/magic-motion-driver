@@ -286,27 +286,30 @@ impl DriverApp {
                         ui.label(egui::RichText::new(msg).color(Color32::from_rgb(100, 220, 140)));
                     }
                 }
-
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(egui::RichText::new("AN-MR200 / AN-MR100").small().color(Color32::DARK_GRAY));
-                });
             });
             ui.add_space(4.0);
         });
 
         // Central Area
-        egui::CentralPanel::default().show(ui, |ui| {
+        let central_frame = egui::Frame::central_panel(ui.style()).inner_margin(egui::Margin {
+            left: 8,
+            right: 8,
+            top: 8,
+            bottom: 0,
+        });
+        egui::CentralPanel::default().frame(central_frame).show(ui, |ui| {
+            let total_avail_h = ui.available_height();
             ui.horizontal(|ui| {
+                ui.set_min_height(total_avail_h);
+                ui.set_max_height(total_avail_h);
+
                 // Left: Remote Image with interactive hotspots
                 ui.vertical(|ui| {
                     ui.set_width(200.0);
+                    ui.set_max_height(total_avail_h);
                     ui.vertical_centered(|ui| {
-                        ui.label(egui::RichText::new("Controle Físico").strong());
-                        ui.label(egui::RichText::new("Passe o mouse ou clique no botão").small().color(Color32::GRAY));
-                        ui.add_space(6.0);
-
                         if let Some(ref tex) = self.texture {
-                            let display_h = 560.0f32;
+                            let display_h = (total_avail_h - 8.0).min(560.0);
                             let display_w = display_h * (REMOTE_IMG_WIDTH / REMOTE_IMG_HEIGHT);
                             let avail_w = ui.available_width();
                             let offset_x = ((avail_w - display_w) / 2.0).max(0.0);
@@ -419,6 +422,10 @@ impl DriverApp {
 
                 // Right: Tabs
                 ui.vertical(|ui| {
+                    ui.set_width(ui.available_width());
+                    ui.set_min_height(total_avail_h);
+                    ui.set_max_height(total_avail_h);
+
                     ui.horizontal(|ui| {
                         ui.selectable_value(&mut self.active_tab, Tab::Buttons, "Botões");
                         ui.selectable_value(&mut self.active_tab, Tab::Motion, "Movimento");
@@ -489,12 +496,7 @@ fn render_menu_option<T: PartialEq + Clone>(
 impl DriverApp {
     fn render_buttons_tab(&mut self, ui: &mut egui::Ui) {
         ui.heading("Configurar Ação do Botão");
-        ui.label(
-            egui::RichText::new("Personalize as ações e atalhos de cada botão do controle.")
-                .small()
-                .color(Color32::GRAY),
-        );
-        ui.add_space(6.0);
+        ui.add_space(4.0);
 
         let total_w = ui.available_width();
         let avail_h = ui.available_height();
@@ -502,10 +504,12 @@ impl DriverApp {
 
         ui.horizontal(|ui| {
             ui.set_min_height(avail_h);
+            ui.set_max_height(avail_h);
 
             // Esquerda: Mapeamento dos botões (linha inteira selecionável)
             ui.vertical(|ui| {
                 ui.set_width(left_w);
+                ui.set_max_height(avail_h);
 
                 let header_h = 22.0;
                 let (header_rect, _) = ui.allocate_exact_size(
@@ -530,10 +534,13 @@ impl DriverApp {
 
                 ui.separator();
 
+                let btn_h = ui.spacing().interact_size.y + ui.spacing().button_padding.y * 2.0;
+                let spacing_y = ui.spacing().item_spacing.y;
+                let table_max_h = (ui.available_height() - btn_h - spacing_y - 2.0).max(100.0);
                 egui::ScrollArea::vertical()
                     .id_salt("buttons_mapping_scroll")
                     .auto_shrink([false; 2])
-                    .max_height(avail_h - 70.0)
+                    .max_height(table_max_h)
                     .show(ui, |ui| {
                         for (idx, b) in Button::mappable().enumerate() {
                             let row_h = 24.0;
@@ -586,7 +593,6 @@ impl DriverApp {
                         }
                     });
 
-                ui.add_space(6.0);
                 if ui.button("Restaurar Botões Padrão").clicked() {
                     self.config.button_mappings = Config::default().button_mappings;
                     self.save_config();
@@ -598,6 +604,7 @@ impl DriverApp {
             // Direita: Menu de seleção da ação
             ui.vertical(|ui| {
                 ui.set_width(ui.available_width());
+                ui.set_max_height(avail_h);
                 let mut new_action = self.config.get_action(self.selected_button);
 
                 // Opção separada: Gravar Tecla ou Atalho Personalizado (mesmo design de card cinza)
@@ -737,10 +744,11 @@ impl DriverApp {
                     egui::RichText::new("Sistema").strong()
                 };
 
+                let actions_max_h = ui.available_height().max(100.0);
                 egui::ScrollArea::vertical()
                     .id_salt("actions_collapsing_scroll")
                     .auto_shrink([false; 2])
-                    .max_height(avail_h - 70.0)
+                    .max_height(actions_max_h)
                     .show(ui, |ui| {
                         ui.set_width(ui.available_width());
 
@@ -804,16 +812,15 @@ impl DriverApp {
 
     fn render_motion_tab(&mut self, ui: &mut egui::Ui) {
         ui.heading("Ajustes de Movimento e Sensibilidade");
-        ui.label(
-            egui::RichText::new("Curvas e multiplicadores de resposta para navegação no desktop e mira em jogos.")
-                .small()
-                .color(Color32::GRAY),
-        );
-        ui.add_space(8.0);
+        ui.add_space(4.0);
 
         let mut changed = false;
 
-        egui::ScrollArea::vertical().auto_shrink([false; 2]).show(ui, |ui| {
+        let avail_h = ui.available_height();
+        egui::ScrollArea::vertical()
+            .auto_shrink([false; 2])
+            .max_height(avail_h)
+            .show(ui, |ui| {
             ui.group(|ui| {
                 ui.label(egui::RichText::new("Sensibilidade dos Eixos:").strong());
                 changed |= ui.add(egui::Slider::new(&mut self.config.motion.sensitivity, 0.05..=1.5).text("Sensibilidade Geral")).changed();
@@ -865,16 +872,15 @@ impl DriverApp {
 
     fn render_settings_tab(&mut self, ui: &mut egui::Ui) {
         ui.heading("Configurações do Sistema e Dispositivo");
-        ui.label(
-            egui::RichText::new("Gerencie telas, inicialização automática, conexões e calibração de sensores.")
-                .small()
-                .color(Color32::GRAY),
-        );
-        ui.add_space(8.0);
+        ui.add_space(4.0);
 
         let mut config_changed = false;
 
-        egui::ScrollArea::vertical().auto_shrink([false; 2]).show(ui, |ui| {
+        let avail_h = ui.available_height();
+        egui::ScrollArea::vertical()
+            .auto_shrink([false; 2])
+            .max_height(avail_h)
+            .show(ui, |ui| {
             // 1. Monitores & Exibição
             ui.group(|ui| {
                 ui.label(egui::RichText::new("Monitores & Área de Controle:").strong());
@@ -1069,16 +1075,15 @@ impl DriverApp {
 
     fn render_sensors_tab(&mut self, ui: &mut egui::Ui) {
         ui.heading("Dados Brutos do Controle em Tempo Real");
-        ui.label(
-            egui::RichText::new("Leituras diretas dos conversores analógico-digitais (ADC) e sensores a ~111 Hz.")
-                .small()
-                .color(Color32::GRAY),
-        );
-        ui.add_space(6.0);
+        ui.add_space(4.0);
 
         let t = self.latest_telemetry.clone();
 
-        egui::ScrollArea::vertical().auto_shrink([false; 2]).show(ui, |ui| {
+        let avail_h = ui.available_height();
+        egui::ScrollArea::vertical()
+            .auto_shrink([false; 2])
+            .max_height(avail_h)
+            .show(ui, |ui| {
             // 1. Conexão & Telemetria
             ui.group(|ui| {
                 ui.horizontal(|ui| {
@@ -1309,8 +1314,6 @@ impl DriverApp {
                     }
                 });
             });
-
-            ui.add_space(8.0);
         });
     }
 }
