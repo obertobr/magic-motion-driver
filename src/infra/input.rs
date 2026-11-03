@@ -1,4 +1,4 @@
-use crate::domain::action::{Action, MediaKey};
+use crate::domain::action::{Action, KeyShortcut, MediaKey};
 
 #[cfg(windows)]
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
@@ -197,6 +197,42 @@ fn media_key_to_vk(key: MediaKey) -> u16 {
     }
 }
 
+pub fn execute_shortcut_press(s: KeyShortcut) {
+    if s.ctrl && s.vk != 0x11 && s.vk != 0xA2 && s.vk != 0xA3 {
+        send_key_event(0x11, false);
+    }
+    if s.alt && s.vk != 0x12 && s.vk != 0xA4 && s.vk != 0xA5 {
+        send_key_event(0x12, false);
+    }
+    if s.shift && s.vk != 0x10 && s.vk != 0xA0 && s.vk != 0xA1 {
+        send_key_event(0x10, false);
+    }
+    if s.win && s.vk != 0x5B && s.vk != 0x5C {
+        send_key_event(0x5B, false);
+    }
+    if s.vk != 0 {
+        send_key_event(s.vk, false);
+    }
+}
+
+pub fn execute_shortcut_release(s: KeyShortcut) {
+    if s.vk != 0 {
+        send_key_event(s.vk, true);
+    }
+    if s.win && s.vk != 0x5B && s.vk != 0x5C {
+        send_key_event(0x5B, true);
+    }
+    if s.shift && s.vk != 0x10 && s.vk != 0xA0 && s.vk != 0xA1 {
+        send_key_event(0x10, true);
+    }
+    if s.alt && s.vk != 0x12 && s.vk != 0xA4 && s.vk != 0xA5 {
+        send_key_event(0x12, true);
+    }
+    if s.ctrl && s.vk != 0x11 && s.vk != 0xA2 && s.vk != 0xA3 {
+        send_key_event(0x11, true);
+    }
+}
+
 /// Dispatches action when button is pressed down.
 pub fn execute_action_press(action: Action) {
     match action {
@@ -221,6 +257,9 @@ pub fn execute_action_press(action: Action) {
         }
         Action::Key(vk) => {
             send_key_event(vk.to_vk(), false);
+        }
+        Action::Shortcut(s) => {
+            execute_shortcut_press(s);
         }
         Action::Media(mk) => {
             send_key_event(media_key_to_vk(mk), false);
@@ -250,6 +289,9 @@ pub fn execute_action_release(action: Action) {
         Action::MouseWheelUp | Action::MouseWheelDown => {}
         Action::Key(vk) => {
             send_key_event(vk.to_vk(), true);
+        }
+        Action::Shortcut(s) => {
+            execute_shortcut_release(s);
         }
         Action::Media(mk) => {
             send_key_event(media_key_to_vk(mk), true);

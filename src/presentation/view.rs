@@ -4,7 +4,7 @@ use std::collections::VecDeque;
 use std::sync::mpsc::{Receiver, Sender};
 use eframe::egui::{self, Color32, Panel, Pos2, Rect, Stroke, StrokeKind, Vec2};
 
-use crate::domain::action::{Action, MediaKey, VirtualKey};
+use crate::domain::action::{Action, KeyShortcut, MediaKey, VirtualKey};
 use crate::domain::button::Button;
 use crate::domain::config::Config;
 use crate::infra::autostart::{is_autostart_enabled, set_autostart};
@@ -22,6 +22,7 @@ pub struct DriverApp {
     tray: Option<SystemTray>,
     save_status: Option<(String, std::time::Instant)>,
     calibration_feedback: Option<(String, std::time::Instant)>,
+    recording_shortcut: bool,
     active_tab: Tab,
     pub should_exit: bool,
     gyro_history_x: VecDeque<f32>,
@@ -78,6 +79,7 @@ impl DriverApp {
             tray,
             save_status: None,
             calibration_feedback: None,
+            recording_shortcut: false,
             active_tab: Tab::Buttons,
             should_exit: false,
             gyro_history_x: VecDeque::with_capacity(120),
@@ -437,89 +439,366 @@ impl DriverApp {
     }
 }
 
+fn render_menu_option<T: PartialEq + Clone>(
+    ui: &mut egui::Ui,
+    current: &mut T,
+    val: T,
+    label: &str,
+) -> bool {
+    let row_height = 24.0;
+    let row_size = egui::vec2(ui.available_width(), row_height);
+    let (rect, resp) = ui.allocate_exact_size(row_size, egui::Sense::click());
+
+    let is_selected = *current == val;
+    let clicked = resp.clicked();
+    if clicked && !is_selected {
+        *current = val;
+    }
+
+    let painter = ui.painter().with_clip_rect(rect);
+
+    let bg_color = if is_selected {
+        ui.visuals().selection.bg_fill
+    } else if resp.hovered() {
+        Color32::from_rgb(52, 56, 64)
+    } else {
+        Color32::from_rgb(36, 38, 43)
+    };
+
+    painter.rect_filled(rect, 4.0, bg_color);
+
+    let text_color = if is_selected || resp.hovered() {
+        Color32::WHITE
+    } else {
+        Color32::from_gray(215)
+    };
+
+    painter.text(
+        egui::pos2(rect.min.x + 10.0, rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        label,
+        egui::FontId::proportional(13.0),
+        text_color,
+    );
+
+    ui.add_space(2.0);
+
+    clicked
+}
+
 impl DriverApp {
     fn render_buttons_tab(&mut self, ui: &mut egui::Ui) {
         ui.heading("Configurar Ação do Botão");
-        ui.add_space(4.0);
+        ui.label(
+            egui::RichText::new("Personalize as ações e atalhos de cada botão do controle.")
+                .small()
+                .color(Color32::GRAY),
+        );
+        ui.add_space(6.0);
 
-        let current_action = self.config.get_action(self.selected_button);
+        let total_w = ui.available_width();
+        let avail_h = ui.available_height();
+        let left_w = (total_w * 0.46).clamp(210.0, 260.0);
 
         ui.horizontal(|ui| {
-            ui.label("Botão Selecionado:");
-            egui::ComboBox::from_id_salt("btn_selector")
-                .selected_text(format!("{:?}", self.selected_button))
-                .show_ui(ui, |ui| {
-                    for b in Button::mappable() {
-                        ui.selectable_value(&mut self.selected_button, b, format!("{b:?}"));
-                    }
-                });
-        });
+            ui.set_min_height(avail_h);
 
-        ui.add_space(8.0);
-        ui.label(egui::RichText::new("Ação atribuída para este botão no Windows:").strong());
+            // Esquerda: Mapeamento dos botões (linha inteira selecionável)
+            ui.vertical(|ui| {
+                ui.set_width(left_w);
 
-        let mut new_action = current_action;
+                let header_h = 22.0;
+                let (header_rect, _) = ui.allocate_exact_size(
+                    egui::vec2(ui.available_width(), header_h),
+                    egui::Sense::hover(),
+                );
+                let hp = ui.painter().with_clip_rect(header_rect);
+                hp.text(
+                    egui::pos2(header_rect.min.x + 8.0, header_rect.center().y),
+                    egui::Align2::LEFT_CENTER,
+                    "Botão",
+                    egui::FontId::proportional(13.0),
+                    Color32::WHITE,
+                );
+                hp.text(
+                    egui::pos2(header_rect.min.x + 95.0, header_rect.center().y),
+                    egui::Align2::LEFT_CENTER,
+                    "Ação Atual",
+                    egui::FontId::proportional(13.0),
+                    Color32::WHITE,
+                );
 
-        egui::ScrollArea::vertical().max_height(260.0).show(ui, |ui| {
-            ui.group(|ui| {
-                ui.label(egui::RichText::new("Ações do Mouse:").strong());
-                ui.selectable_value(&mut new_action, Action::MouseLeft, "Clique Esquerdo");
-                ui.selectable_value(&mut new_action, Action::MouseRight, "Clique Direito");
-                ui.selectable_value(&mut new_action, Action::MouseMiddle, "Clique do Meio");
-                ui.selectable_value(&mut new_action, Action::MouseWheelUp, "Rolar Roda para Cima");
-                ui.selectable_value(&mut new_action, Action::MouseWheelDown, "Rolar Roda para Baixo");
-            });
+                ui.separator();
 
-            ui.add_space(4.0);
-            ui.group(|ui| {
-                ui.label(egui::RichText::new("Controles de Mira / Sistema:").strong());
-                ui.selectable_value(&mut new_action, Action::ToggleCursor, "Ativar / Pausar Mira");
-                ui.selectable_value(&mut new_action, Action::Recenter, "Recalibrar Centro");
-                ui.selectable_value(&mut new_action, Action::None, "Nenhuma Ação (Desativar)");
-            });
+                egui::ScrollArea::vertical()
+                    .id_salt("buttons_mapping_scroll")
+                    .auto_shrink([false; 2])
+                    .max_height(avail_h - 70.0)
+                    .show(ui, |ui| {
+                        for (idx, b) in Button::mappable().enumerate() {
+                            let row_h = 24.0;
+                            let row_size = egui::vec2(ui.available_width(), row_h);
+                            let (row_rect, row_resp) = ui.allocate_exact_size(row_size, egui::Sense::click());
 
-            ui.add_space(4.0);
-            ui.group(|ui| {
-                ui.label(egui::RichText::new("Teclas de Mídia:").strong());
-                for mk in MediaKey::ALL {
-                    ui.selectable_value(&mut new_action, Action::Media(mk), mk.label());
-                }
-            });
+                            if row_resp.clicked() {
+                                self.selected_button = b;
+                                self.recording_shortcut = false;
+                            }
 
-            ui.add_space(4.0);
-            ui.group(|ui| {
-                ui.label(egui::RichText::new("Teclas do Teclado:").strong());
-                for vk in VirtualKey::ALL {
-                    ui.selectable_value(&mut new_action, Action::Key(vk), vk.label());
-                }
-            });
-        });
+                            let is_selected = self.selected_button == b;
+                            let painter = ui.painter().with_clip_rect(row_rect);
 
-        if new_action != current_action {
-            self.config.set_action(self.selected_button, new_action);
-            self.save_config();
-        }
+                            if is_selected {
+                                painter.rect_filled(row_rect, 3.0, ui.visuals().selection.bg_fill);
+                            } else if row_resp.hovered() {
+                                painter.rect_filled(row_rect, 3.0, ui.visuals().faint_bg_color);
+                            } else if idx % 2 == 1 {
+                                painter.rect_filled(
+                                    row_rect,
+                                    3.0,
+                                    Color32::from_rgba_unmultiplied(255, 255, 255, 4),
+                                );
+                            }
 
-        ui.add_space(10.0);
-        ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("Resumo de Mapeamentos:").strong());
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let (name_color, action_color) = if is_selected {
+                                (Color32::WHITE, Color32::WHITE)
+                            } else {
+                                (ui.visuals().text_color(), Color32::from_gray(180))
+                            };
+
+                            let action = self.config.get_action(b);
+
+                            painter.text(
+                                egui::pos2(row_rect.min.x + 8.0, row_rect.center().y),
+                                egui::Align2::LEFT_CENTER,
+                                format!("{b:?}"),
+                                egui::FontId::proportional(13.0),
+                                name_color,
+                            );
+
+                            painter.text(
+                                egui::pos2(row_rect.min.x + 95.0, row_rect.center().y),
+                                egui::Align2::LEFT_CENTER,
+                                action.label(),
+                                egui::FontId::proportional(13.0),
+                                action_color,
+                            );
+                        }
+                    });
+
+                ui.add_space(6.0);
                 if ui.button("Restaurar Botões Padrão").clicked() {
                     self.config.button_mappings = Config::default().button_mappings;
                     self.save_config();
                 }
             });
-        });
-        egui::Grid::new("mapping_summary").striped(true).show(ui, |ui| {
-            ui.label("Botão");
-            ui.label("Ação Atual");
-            ui.end_row();
 
-            for b in Button::mappable() {
-                ui.label(format!("{b:?}"));
-                ui.label(self.config.get_action(b).label());
-                ui.end_row();
-            }
+            ui.separator();
+
+            // Direita: Menu de seleção da ação
+            ui.vertical(|ui| {
+                ui.set_width(ui.available_width());
+                let mut new_action = self.config.get_action(self.selected_button);
+
+                // Opção separada: Gravar Tecla ou Atalho Personalizado (mesmo design de card cinza)
+                let is_shortcut_active = matches!(new_action, Action::Shortcut(_));
+                let shortcut_row_h = 26.0;
+                let shortcut_row_size = egui::vec2(ui.available_width(), shortcut_row_h);
+
+                if self.recording_shortcut {
+                    let mut captured = None;
+                    ui.input(|i| {
+                        for ev in &i.events {
+                            if let egui::Event::Key { key, pressed: true, repeat: false, modifiers, .. } = ev {
+                                if let Some(vk) = egui_key_to_vk(*key) {
+                                    captured = Some(KeyShortcut::with_modifiers(
+                                        vk,
+                                        modifiers.ctrl || modifiers.command,
+                                        modifiers.shift,
+                                        modifiers.alt,
+                                        modifiers.mac_cmd,
+                                    ));
+                                    break;
+                                }
+                            }
+                        }
+                    });
+
+                    if let Some(shortcut) = captured {
+                        new_action = Action::Shortcut(shortcut);
+                        self.recording_shortcut = false;
+                    }
+
+                    let (rect, resp) = ui.allocate_exact_size(shortcut_row_size, egui::Sense::click());
+                    if resp.clicked() {
+                        self.recording_shortcut = false;
+                    }
+
+                    let painter = ui.painter().with_clip_rect(rect);
+                    painter.rect_filled(rect, 4.0, Color32::from_rgb(48, 44, 30));
+                    painter.rect_stroke(
+                        rect,
+                        4.0,
+                        egui::Stroke::new(1.0, Color32::from_rgb(230, 180, 50)),
+                        egui::StrokeKind::Inside,
+                    );
+
+                    painter.text(
+                        egui::pos2(rect.min.x + 10.0, rect.center().y),
+                        egui::Align2::LEFT_CENTER,
+                        "⌨ Pressione a tecla ou atalho... (Clique para cancelar)",
+                        egui::FontId::proportional(13.0),
+                        Color32::from_rgb(255, 215, 70),
+                    );
+                } else {
+                    let (rect, resp) = ui.allocate_exact_size(shortcut_row_size, egui::Sense::click());
+                    if resp.clicked() {
+                        self.recording_shortcut = true;
+                    }
+
+                    let painter = ui.painter().with_clip_rect(rect);
+
+                    let bg_color = if is_shortcut_active {
+                        ui.visuals().selection.bg_fill
+                    } else if resp.hovered() {
+                        Color32::from_rgb(52, 56, 64)
+                    } else {
+                        Color32::from_rgb(36, 38, 43)
+                    };
+
+                    painter.rect_filled(rect, 4.0, bg_color);
+
+                    let label_text = if let Action::Shortcut(s) = new_action {
+                        format!("⌨ Atalho Personalizado: {}  (Clique para alterar)", s.label())
+                    } else {
+                        "⌨ Gravar Tecla ou Atalho Personalizado...".to_string()
+                    };
+
+                    let text_color = if is_shortcut_active || resp.hovered() {
+                        Color32::WHITE
+                    } else {
+                        Color32::from_gray(215)
+                    };
+
+                    painter.text(
+                        egui::pos2(rect.min.x + 10.0, rect.center().y),
+                        egui::Align2::LEFT_CENTER,
+                        label_text,
+                        egui::FontId::proportional(13.0),
+                        text_color,
+                    );
+                }
+                ui.add_space(6.0);
+
+                // Indicativos dinâmicos para cada categoria mesmo se fechada
+                let mouse_has_action = matches!(
+                    new_action,
+                    Action::MouseLeft
+                        | Action::MouseRight
+                        | Action::MouseMiddle
+                        | Action::MouseWheelUp
+                        | Action::MouseWheelDown
+                );
+                let mouse_title = if mouse_has_action {
+                    egui::RichText::new("Mouse")
+                        .strong()
+                        .color(Color32::from_rgb(100, 190, 255))
+                } else {
+                    egui::RichText::new("Mouse").strong()
+                };
+
+                let keyboard_has_action = matches!(new_action, Action::Key(_));
+                let keyboard_title = if keyboard_has_action {
+                    egui::RichText::new("Teclado")
+                        .strong()
+                        .color(Color32::from_rgb(100, 190, 255))
+                } else {
+                    egui::RichText::new("Teclado").strong()
+                };
+
+                let media_has_action = matches!(new_action, Action::Media(_));
+                let media_title = if media_has_action {
+                    egui::RichText::new("Mídia")
+                        .strong()
+                        .color(Color32::from_rgb(100, 190, 255))
+                } else {
+                    egui::RichText::new("Mídia").strong()
+                };
+
+                let system_has_action = matches!(
+                    new_action,
+                    Action::ToggleCursor | Action::Recenter | Action::None
+                );
+                let system_title = if system_has_action {
+                    egui::RichText::new("Sistema")
+                        .strong()
+                        .color(Color32::from_rgb(100, 190, 255))
+                } else {
+                    egui::RichText::new("Sistema").strong()
+                };
+
+                egui::ScrollArea::vertical()
+                    .id_salt("actions_collapsing_scroll")
+                    .auto_shrink([false; 2])
+                    .max_height(avail_h - 70.0)
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+
+                        egui::CollapsingHeader::new(mouse_title)
+                            .id_salt("cat_mouse_v2")
+                            .default_open(false)
+                            .show(ui, |ui| {
+                                render_menu_option(ui, &mut new_action, Action::MouseLeft, "Clique Esquerdo");
+                                render_menu_option(ui, &mut new_action, Action::MouseRight, "Clique Direito");
+                                render_menu_option(ui, &mut new_action, Action::MouseMiddle, "Clique do Meio");
+                                render_menu_option(ui, &mut new_action, Action::MouseWheelUp, "Rolar para Cima");
+                                render_menu_option(ui, &mut new_action, Action::MouseWheelDown, "Rolar para Baixo");
+                                ui.add_space(4.0);
+                            });
+
+                        egui::CollapsingHeader::new(keyboard_title)
+                            .id_salt("cat_keyboard_v2")
+                            .default_open(false)
+                            .show(ui, |ui| {
+                                render_menu_option(ui, &mut new_action, Action::Key(VirtualKey::LeftWin), "Tecla Windows (Win)");
+                                render_menu_option(ui, &mut new_action, Action::Key(VirtualKey::Return), "Enter");
+                                render_menu_option(ui, &mut new_action, Action::Key(VirtualKey::Escape), "Esc");
+                                render_menu_option(ui, &mut new_action, Action::Key(VirtualKey::Space), "Espaço");
+                                render_menu_option(ui, &mut new_action, Action::Key(VirtualKey::Backspace), "Backspace");
+                                render_menu_option(ui, &mut new_action, Action::Key(VirtualKey::Tab), "Tab");
+                                render_menu_option(ui, &mut new_action, Action::Key(VirtualKey::Up), "Seta Cima");
+                                render_menu_option(ui, &mut new_action, Action::Key(VirtualKey::Down), "Seta Baixo");
+                                render_menu_option(ui, &mut new_action, Action::Key(VirtualKey::Left), "Seta Esquerda");
+                                render_menu_option(ui, &mut new_action, Action::Key(VirtualKey::Right), "Seta Direita");
+                                ui.add_space(4.0);
+                            });
+
+                        egui::CollapsingHeader::new(media_title)
+                            .id_salt("cat_media_v2")
+                            .default_open(false)
+                            .show(ui, |ui| {
+                                for mk in MediaKey::ALL {
+                                    render_menu_option(ui, &mut new_action, Action::Media(mk), mk.label());
+                                }
+                                ui.add_space(4.0);
+                            });
+
+                        egui::CollapsingHeader::new(system_title)
+                            .id_salt("cat_system_v2")
+                            .default_open(false)
+                            .show(ui, |ui| {
+                                render_menu_option(ui, &mut new_action, Action::ToggleCursor, "Ativar / Pausar Mira");
+                                render_menu_option(ui, &mut new_action, Action::Recenter, "Recalibrar Centro");
+                                render_menu_option(ui, &mut new_action, Action::None, "Desativar Botão");
+                                ui.add_space(4.0);
+                            });
+                    });
+
+                if new_action != self.config.get_action(self.selected_button) {
+                    self.config.set_action(self.selected_button, new_action);
+                    self.save_config();
+                }
+            });
         });
     }
 
@@ -1268,4 +1547,89 @@ fn draw_multichannel_oscilloscope(
         plot_channel(accel_z, &|v| (v - 2180.0) / 1037.0, Color32::from_rgb(14, 165, 233));
     }
 }
+
+fn egui_key_to_vk(key: egui::Key) -> Option<u16> {
+    let vk = match key {
+        egui::Key::A => 0x41,
+        egui::Key::B => 0x42,
+        egui::Key::C => 0x43,
+        egui::Key::D => 0x44,
+        egui::Key::E => 0x45,
+        egui::Key::F => 0x46,
+        egui::Key::G => 0x47,
+        egui::Key::H => 0x48,
+        egui::Key::I => 0x49,
+        egui::Key::J => 0x4A,
+        egui::Key::K => 0x4B,
+        egui::Key::L => 0x4C,
+        egui::Key::M => 0x4D,
+        egui::Key::N => 0x4E,
+        egui::Key::O => 0x4F,
+        egui::Key::P => 0x50,
+        egui::Key::Q => 0x51,
+        egui::Key::R => 0x52,
+        egui::Key::S => 0x53,
+        egui::Key::T => 0x54,
+        egui::Key::U => 0x55,
+        egui::Key::V => 0x56,
+        egui::Key::W => 0x57,
+        egui::Key::X => 0x58,
+        egui::Key::Y => 0x59,
+        egui::Key::Z => 0x5A,
+        egui::Key::Num0 => 0x30,
+        egui::Key::Num1 => 0x31,
+        egui::Key::Num2 => 0x32,
+        egui::Key::Num3 => 0x33,
+        egui::Key::Num4 => 0x34,
+        egui::Key::Num5 => 0x35,
+        egui::Key::Num6 => 0x36,
+        egui::Key::Num7 => 0x37,
+        egui::Key::Num8 => 0x38,
+        egui::Key::Num9 => 0x39,
+        egui::Key::F1 => 0x70,
+        egui::Key::F2 => 0x71,
+        egui::Key::F3 => 0x72,
+        egui::Key::F4 => 0x73,
+        egui::Key::F5 => 0x74,
+        egui::Key::F6 => 0x75,
+        egui::Key::F7 => 0x76,
+        egui::Key::F8 => 0x77,
+        egui::Key::F9 => 0x78,
+        egui::Key::F10 => 0x79,
+        egui::Key::F11 => 0x7A,
+        egui::Key::F12 => 0x7B,
+        egui::Key::ArrowDown => 0x28,
+        egui::Key::ArrowLeft => 0x25,
+        egui::Key::ArrowRight => 0x27,
+        egui::Key::ArrowUp => 0x26,
+        egui::Key::PageUp => 0x21,
+        egui::Key::PageDown => 0x22,
+        egui::Key::Home => 0x24,
+        egui::Key::End => 0x23,
+        egui::Key::Escape => 0x1B,
+        egui::Key::Tab => 0x09,
+        egui::Key::Backspace => 0x08,
+        egui::Key::Enter => 0x0D,
+        egui::Key::Space => 0x20,
+        egui::Key::Insert => 0x2D,
+        egui::Key::Delete => 0x2E,
+        egui::Key::Minus => 0xBD,
+        egui::Key::Equals => 0xBB,
+        egui::Key::OpenBracket => 0xDB,
+        egui::Key::CloseBracket => 0xDD,
+        egui::Key::Backslash => 0xDC,
+        egui::Key::Semicolon => 0xBA,
+        egui::Key::Quote => 0xDE,
+        egui::Key::Comma => 0xBC,
+        egui::Key::Period => 0xBE,
+        egui::Key::Slash => 0xBF,
+        _ => return None,
+    };
+    Some(vk)
+}
+
+
+
+
+
 
