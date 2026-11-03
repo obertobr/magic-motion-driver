@@ -12,6 +12,28 @@ use crate::infra::driver::{DriverCommand, DriverTelemetry};
 use crate::presentation::hotspots::{find_hotspot_at, BUTTON_HOTSPOTS, REMOTE_IMG_HEIGHT, REMOTE_IMG_WIDTH};
 use crate::presentation::tray::{SystemTray, TrayAction};
 
+#[derive(Clone, Debug)]
+struct SensorRecordSample {
+    sequence: u8,
+    time_s: f64,
+    rate_hz: f32,
+    gyro_x: u16,
+    gyro_y: u16,
+    gyro_dx: i32,
+    gyro_dy: i32,
+    accel_x: u16,
+    accel_y: u16,
+    accel_z: u16,
+    g_x: f32,
+    g_y: f32,
+    g_z: f32,
+    roll_deg: f32,
+    yaw_deg: f32,
+    pitch_deg: f32,
+    button_raw: u8,
+    buttons_active: String,
+}
+
 pub struct DriverApp {
     config: Config,
     driver_cmd_tx: Sender<DriverCommand>,
@@ -40,6 +62,10 @@ pub struct DriverApp {
     remote_roll: f32,
     attitude: crate::domain::attitude::AttitudeEstimator,
     mesh_3d: crate::presentation::mesh3d::Mesh3D,
+    is_recording_sensors: bool,
+    recording_start_instant: Option<std::time::Instant>,
+    recorded_samples: Vec<SensorRecordSample>,
+    recording_status_msg: Option<(String, std::time::Instant)>,
 }
 
 impl std::fmt::Debug for DriverApp {
@@ -97,6 +123,10 @@ impl DriverApp {
             remote_roll: 0.0,
             attitude: crate::domain::attitude::AttitudeEstimator::default(),
             mesh_3d: crate::presentation::mesh3d::Mesh3D::load_or_default(),
+            is_recording_sensors: false,
+            recording_start_instant: None,
+            recorded_samples: Vec::new(),
+            recording_status_msg: None,
         }
     }
 
@@ -169,7 +199,104 @@ impl DriverApp {
         self.remote_pitch = pitch;
         self.remote_roll = roll;
 
+        if self.is_recording_sensors {
+            let start = *self.recording_start_instant.get_or_insert(telem.timestamp);
+            let time_s = telem.timestamp.duration_since(start).as_secs_f64();
+            let [g_x, g_y, g_z] = crate::domain::gravity::AccelCalibration::LG_AN_MR200
+                .to_g([telem.accel_x, telem.accel_y, telem.accel_z]);
+
+            let active_btns: Vec<String> = telem.active_buttons.iter().map(|b| format!("{b:?}")).collect();
+            let buttons_str = active_btns.join(";");
+
+            if self.recorded_samples.len() < 200_000 {
+                self.recorded_samples.push(SensorRecordSample {
+                    sequence: telem.sequence,
+                    time_s,
+                    rate_hz: telem.rate_hz,
+                    gyro_x: telem.gyro_x,
+                    gyro_y: telem.gyro_y,
+                    gyro_dx: telem.gyro_dx,
+                    gyro_dy: telem.gyro_dy,
+                    accel_x: telem.accel_x,
+                    accel_y: telem.accel_y,
+                    accel_z: telem.accel_z,
+                    g_x,
+                    g_y,
+                    g_z,
+                    roll_deg: telem.roll_deg,
+                    yaw_deg: yaw,
+                    pitch_deg: pitch,
+                    button_raw: telem.button_raw,
+                    buttons_active: buttons_str,
+                });
+            }
+        }
+
         self.latest_telemetry = telem;
+    }
+
+    fn start_recording_sensors(&mut self) {
+        self.is_recording_sensors = true;
+        self.recording_start_instant = None;
+        self.recorded_samples.clear();
+        self.recording_status_msg = Some(("Gravação iniciada...".to_string(), std::time::Instant::now()));
+    }
+
+    fn stop_recording_sensors(&mut self) {
+        self.is_recording_sensors = false;
+        let count = self.recorded_samples.len();
+        if count == 0 {
+            self.recording_status_msg = Some(("Nenhuma amostra gravada.".to_string(), std::time::Instant::now()));
+            return;
+        }
+
+        let now = std::time::SystemTime::now();
+        let secs = now.duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
+        let ts_str = format_timestamp(secs);
+        let filename = format!("sensores_{ts_str}.csv");
+
+        let mut csv = String::with_capacity(count * 90 + 200);
+        csv.push_str("seq,time_s,rate_hz,gyro_x,gyro_y,gyro_dx,gyro_dy,accel_x,accel_y,accel_z,accel_g_x,accel_g_y,accel_g_z,roll_deg,yaw_deg,pitch_deg,buttons_hex,buttons_active\n");
+        for s in &self.recorded_samples {
+            use std::fmt::Write;
+            let _ = writeln!(
+                csv,
+                "{},{:.4},{:.1},{},{},{},{},{},{},{},{:.3},{:.3},{:.3},{:.1},{:.1},{:.1},0x{:02X},\"{}\"",
+                s.sequence,
+                s.time_s,
+                s.rate_hz,
+                s.gyro_x,
+                s.gyro_y,
+                s.gyro_dx,
+                s.gyro_dy,
+                s.accel_x,
+                s.accel_y,
+                s.accel_z,
+                s.g_x,
+                s.g_y,
+                s.g_z,
+                s.roll_deg,
+                s.yaw_deg,
+                s.pitch_deg,
+                s.button_raw,
+                s.buttons_active
+            );
+        }
+
+        match std::fs::write(&filename, csv.as_bytes()) {
+            Ok(()) => {
+                self.recording_status_msg = Some((
+                    format!("Salvo: {filename} ({count} amostras)"),
+                    std::time::Instant::now(),
+                ));
+            }
+            Err(e) => {
+                self.recording_status_msg = Some((
+                    format!("Erro ao salvar: {e}"),
+                    std::time::Instant::now(),
+                ));
+            }
+        }
     }
 
     fn save_config(&mut self) {
@@ -217,7 +344,7 @@ impl DriverApp {
             }
         }
 
-        if self.active_tab == Tab::Sensors {
+        if self.active_tab == Tab::Sensors || self.is_recording_sensors {
             ctx.request_repaint();
         } else if self.latest_telemetry.connected || !self.latest_telemetry.active_buttons.is_empty() {
             ctx.request_repaint_after(std::time::Duration::from_millis(30));
@@ -1217,7 +1344,66 @@ impl DriverApp {
 
             // 3. Gráfico de Sensores com Toggles Individuais (em cima do 3D)
             ui.group(|ui| {
-                ui.label(egui::RichText::new("Gráfico de Sensores").strong());
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("Gráfico de Sensores").strong());
+
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        // 1. Botão de Gravação (extrema direita)
+                        if self.is_recording_sensors {
+                            if ui
+                                .button(
+                                    egui::RichText::new("⏹ Parar e Salvar")
+                                        .color(Color32::from_rgb(255, 110, 110))
+                                        .small(),
+                                )
+                                .clicked()
+                            {
+                                self.stop_recording_sensors();
+                            }
+                        } else {
+                            if ui
+                                .button(egui::RichText::new("⏺ Gravar Dados").small())
+                                .on_hover_text("Inicia a gravação de todas as leituras a ~111 Hz em arquivo CSV")
+                                .clicked()
+                            {
+                                self.start_recording_sensors();
+                            }
+                        }
+
+                        // 2. Botão com ícone de pasta sem texto logo ao lado do botão de gravar
+                        if ui
+                            .button(egui::RichText::new("📂").size(13.0))
+                            .on_hover_text("Abrir pasta onde as gravações CSV são salvas")
+                            .clicked()
+                        {
+                            let _ = std::process::Command::new("explorer").arg(".").spawn();
+                        }
+
+                        // 3. Indicador de gravação ou feedback
+                        if self.is_recording_sensors {
+                            let count = self.recorded_samples.len();
+                            let elapsed = self
+                                .recording_start_instant
+                                .map(|t| t.elapsed().as_secs_f32())
+                                .unwrap_or(0.0);
+
+                            ui.label(
+                                egui::RichText::new(format!("● Gravando ({count} amostras, {elapsed:.1}s)"))
+                                    .color(Color32::from_rgb(255, 80, 80))
+                                    .strong()
+                                    .small(),
+                            );
+                        } else if let Some((ref msg, time)) = self.recording_status_msg {
+                            if time.elapsed() < std::time::Duration::from_secs(8) {
+                                ui.label(
+                                    egui::RichText::new(msg)
+                                        .color(Color32::from_rgb(100, 220, 140))
+                                        .small(),
+                                );
+                            }
+                        }
+                    });
+                });
                 ui.add_space(3.0);
 
                 ui.horizontal_wrapped(|ui| {
@@ -1595,8 +1781,47 @@ fn egui_key_to_vk(key: egui::Key) -> Option<u16> {
     Some(vk)
 }
 
+fn format_timestamp(secs: u64) -> String {
+    let s = secs % 60;
+    let m = (secs / 60) % 60;
+    let h = (secs / 3600) % 24;
+    let mut days = secs / 86400;
+    let mut year = 1970;
+    loop {
+        let leap = if year % 4 == 0 && (year % 100 != 0 || year % 400 == 0) { 1 } else { 0 };
+        let days_in_year = 365 + leap;
+        if days >= days_in_year {
+            days -= days_in_year;
+            year += 1;
+        } else {
+            break;
+        }
+    }
+    let leap = if year % 4 == 0 && (year % 100 != 0 || year % 400 == 0) { 1 } else { 0 };
+    let month_days = [31, 28 + leap, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let mut month = 1;
+    for &d in &month_days {
+        if days >= d {
+            days -= d;
+            month += 1;
+        } else {
+            break;
+        }
+    }
+    let day = days + 1;
+    format!("{year:04}{month:02}{day:02}_{h:02}{m:02}{s:02}")
+}
 
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-
+    #[test]
+    fn test_format_timestamp() {
+        assert_eq!(format_timestamp(0), "19700101_000000");
+        let ts = format_timestamp(1762129500);
+        assert!(ts.starts_with("2025"));
+    }
+}
 
 

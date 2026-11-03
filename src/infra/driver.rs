@@ -20,6 +20,8 @@ use crate::infra::serial::{find_receiver_port, open_port};
 /// Real-time telemetry sent from driver thread to UI.
 #[derive(Clone, Debug)]
 pub struct DriverTelemetry {
+    pub timestamp: Instant,
+    pub sequence: u8,
     pub connected: bool,
     pub port_name: String,
     pub rate_hz: f32,
@@ -41,6 +43,8 @@ pub struct DriverTelemetry {
 impl Default for DriverTelemetry {
     fn default() -> Self {
         Self {
+            timestamp: Instant::now(),
+            sequence: 0,
             connected: false,
             port_name: String::new(),
             rate_hz: 0.0,
@@ -303,6 +307,30 @@ fn run_driver_loop(
             }
 
             active_buttons = new_buttons;
+
+            // Send telemetry for EVERY complete frame received (~111 Hz) with precise hardware arrival timestamp
+            let now = Instant::now();
+            last_telem_send = now;
+            let _ = telem_tx.send(DriverTelemetry {
+                timestamp: now,
+                sequence: frame.sequence,
+                connected: true,
+                port_name: port_name.clone().unwrap_or_default(),
+                rate_hz: current_fps,
+                gyro_x: frame.gyro_x,
+                gyro_y: frame.gyro_y,
+                gyro_dx: dx,
+                gyro_dy: dy,
+                accel_x: frame.accel[0],
+                accel_y: frame.accel[1],
+                accel_z: frame.accel[2],
+                active_buttons,
+                button_raw: frame.button_code,
+                cursor_enabled: processor.is_cursor_enabled(),
+                center_x: processor.center_x,
+                center_y: processor.center_y,
+                roll_deg: processor.current_roll_deg(),
+            });
         }
 
         // 5. Calculate FPS (packet rate Hz)
@@ -313,16 +341,19 @@ fn run_driver_loop(
             fps_timer = Instant::now();
         }
 
-        // 6. Send telemetry to UI at ~60 Hz (every 16 ms) or immediately if buttons change
-        if last_telem_send.elapsed() >= Duration::from_millis(16) || !active_buttons.is_empty() {
-            last_telem_send = Instant::now();
-            let (gx, gy, ax, ay, az, b_code) = if let Some(ref f) = last_valid_frame {
-                (f.gyro_x, f.gyro_y, f.accel[0], f.accel[1], f.accel[2], f.button_code)
+        // 6. Heartbeat fallback if no frames received recently (keeps UI status alive)
+        if last_valid_frame.is_none() || last_telem_send.elapsed() >= Duration::from_millis(250) {
+            let now = Instant::now();
+            last_telem_send = now;
+            let (gx, gy, ax, ay, az, b_code, seq) = if let Some(ref f) = last_valid_frame {
+                (f.gyro_x, f.gyro_y, f.accel[0], f.accel[1], f.accel[2], f.button_code, f.sequence)
             } else {
-                (537, 537, 2048, 2048, 2048, 0x00)
+                (537, 537, 2048, 2048, 2048, 0x00, 0)
             };
 
             let _ = telem_tx.send(DriverTelemetry {
+                timestamp: now,
+                sequence: seq,
                 connected: port_stream.is_some(),
                 port_name: port_name.clone().unwrap_or_default(),
                 rate_hz: current_fps,
