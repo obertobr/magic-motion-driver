@@ -94,14 +94,14 @@ Inspect raw 111 Hz sensor readings, visualize all 5 IMU channels in real time, r
 | **Remote Control** | LG Magic Motion **AN-MR200** (or compatible **AN-MR100** RF remotes) |
 | **USB RF Receiver** | LG RF Dongle based on **Silicon Labs CP2102 USB to UART Bridge** (`VID_10C4&PID_EA60`) |
 | **USB Driver** | [Silicon Labs CP210x VCP Windows Driver](https://www.silabs.com/developers/usb-to-uart-bridge-vcp-drivers) (`silabser.sys`, usually installed automatically via Windows Update) |
-| **Operating System** | Windows 10 or Windows 11 (`x86_64`) |
+| **Operating System** | Windows 10 or Windows 11 (`x64`, `x86 32-bit`, `ARM64`) |
 
 ---
 
 ## Getting Started
 
 ### Option 1: Download Pre-Built Binary
-1. Download the latest `magic-motion.exe` from the [**Releases**](https://github.com/obertobr/magic-motion-driver/releases) page.
+1. Download the executable for your architecture (`magic-motion-windows-x64.exe`, `x86.exe`, or `arm64.exe`) from the [**Releases**](https://github.com/obertobr/magic-motion-driver/releases) page.
 2. Plug in the LG RF USB receiver.
 3. Run `magic-motion.exe`.
 
