@@ -9,12 +9,15 @@ use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use crate::domain::action::Action;
-use crate::domain::button::{decode_button_code, ButtonSet};
+use crate::domain::action::{Action, MediaKey};
+use crate::domain::button::{decode_button_code, Button, ButtonSet};
 use crate::domain::config::Config;
 use crate::domain::motion::{MotionProcessor, MotionSettings};
 use crate::domain::protocol::{Frame, FrameDecoder};
-use crate::infra::input::{execute_action_press, execute_action_release, send_mouse_move_clamped};
+use crate::infra::input::{
+    execute_action_press, execute_action_release, execute_shortcut_press, media_key_to_vk,
+    send_key_event, send_mouse_move_clamped, send_mouse_wheel,
+};
 use crate::infra::serial::{find_receiver_port, open_port};
 
 /// Real-time telemetry sent from driver thread to UI.
@@ -148,6 +151,14 @@ fn run_driver_loop(
     let mut active_buttons = ButtonSet::EMPTY;
     let mut clamp_rect = resolve_monitor_rect(config.target_monitor);
 
+    #[derive(Clone, Copy)]
+    struct ButtonHoldState {
+        pressed_at: Instant,
+        last_repeat: Instant,
+    }
+
+    let mut button_holds: [Option<ButtonHoldState>; Button::COUNT] = [None; Button::COUNT];
+
     let mut port_name: Option<String> = None;
     let mut port_stream: Option<Box<dyn serialport::SerialPort>> = None;
     let mut read_buf = [0u8; 256];
@@ -228,6 +239,14 @@ fn run_driver_loop(
             }
 
             if port_stream.is_none() {
+                if !active_buttons.is_empty() {
+                    for btn in active_buttons.iter() {
+                        let action = config.get_action(btn);
+                        execute_action_release(action);
+                    }
+                    active_buttons = ButtonSet::EMPTY;
+                    button_holds = [None; Button::COUNT];
+                }
                 last_valid_frame = None;
                 last_dx = 0;
                 last_dy = 0;
@@ -285,8 +304,13 @@ fn run_driver_loop(
             let new_buttons = decode_button_code(frame.button_code);
             let pressed = new_buttons.difference(active_buttons);
             let released = active_buttons.difference(new_buttons);
+            let now = Instant::now();
 
             for btn in pressed.iter() {
+                button_holds[btn.index()] = Some(ButtonHoldState {
+                    pressed_at: now,
+                    last_repeat: now,
+                });
                 let action = config.get_action(btn);
                 match action {
                     Action::ToggleCursor => {
@@ -302,14 +326,46 @@ fn run_driver_loop(
             }
 
             for btn in released.iter() {
+                button_holds[btn.index()] = None;
                 let action = config.get_action(btn);
                 execute_action_release(action);
             }
 
             active_buttons = new_buttons;
 
+            // Typematic auto-repeat for held keyboard keys, shortcuts, wheel, and volume
+            for btn in active_buttons.iter() {
+                if let Some(ref mut hold) = button_holds[btn.index()] {
+                    if now.duration_since(hold.pressed_at) >= Duration::from_millis(250)
+                        && now.duration_since(hold.last_repeat) >= Duration::from_millis(35)
+                    {
+                        hold.last_repeat = now;
+                        let action = config.get_action(btn);
+                        match action {
+                            Action::Key(vk) => {
+                                send_key_event(vk.to_vk(), false);
+                            }
+                            Action::Shortcut(s) => {
+                                execute_shortcut_press(s);
+                            }
+                            Action::MouseWheelUp => {
+                                send_mouse_wheel(1);
+                            }
+                            Action::MouseWheelDown => {
+                                send_mouse_wheel(-1);
+                            }
+                            Action::Media(mk)
+                                if matches!(mk, MediaKey::VolumeUp | MediaKey::VolumeDown) =>
+                            {
+                                send_key_event(media_key_to_vk(mk), false);
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+
             // Send telemetry for EVERY complete frame received (~111 Hz) with precise hardware arrival timestamp
-            let now = Instant::now();
             last_telem_send = now;
             let _ = telem_tx.send(DriverTelemetry {
                 timestamp: now,
@@ -344,6 +400,14 @@ fn run_driver_loop(
         // 6. Heartbeat fallback if no frames received recently (keeps UI status alive)
         if last_valid_frame.is_none() || last_telem_send.elapsed() >= Duration::from_millis(250) {
             let now = Instant::now();
+            if now.duration_since(last_telem_send) >= Duration::from_millis(350) && !active_buttons.is_empty() {
+                for btn in active_buttons.iter() {
+                    let action = config.get_action(btn);
+                    execute_action_release(action);
+                }
+                active_buttons = ButtonSet::EMPTY;
+                button_holds = [None; Button::COUNT];
+            }
             last_telem_send = now;
             let (gx, gy, ax, ay, az, b_code, seq) = if let Some(ref f) = last_valid_frame {
                 (f.gyro_x, f.gyro_y, f.accel[0], f.accel[1], f.accel[2], f.button_code, f.sequence)
