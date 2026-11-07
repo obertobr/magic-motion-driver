@@ -1,23 +1,17 @@
-name: CI & Release
+name: CI
 
 on:
   push:
     branches: [ main ]
-    tags: [ 'v*' ]
   pull_request:
     branches: [ main ]
-  release:
-    types: [ published ]
-
-permissions:
-  contents: write
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
   test:
-    name: Test (Windows x64)
+    name: Test & Build (Windows x64)
     runs-on: windows-latest
 
     steps:
@@ -35,56 +29,5 @@ jobs:
       - name: Run unit & integration tests
         run: cargo test --verbose
 
-  build:
-    name: Build (${{ matrix.name }})
-    runs-on: windows-latest
-    needs: test
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - target: x86_64-pc-windows-msvc
-            name: Windows x64
-            binary_name: magic-motion-windows-x64.exe
-          - target: i686-pc-windows-msvc
-            name: Windows x86 (32-bit)
-            binary_name: magic-motion-windows-x86.exe
-          - target: aarch64-pc-windows-msvc
-            name: Windows ARM64
-            binary_name: magic-motion-windows-arm64.exe
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Install Rust toolchain & target
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
-
-      - name: Cache Cargo registry and target
-        uses: Swatinem/rust-cache@v2
-        with:
-          key: ${{ matrix.target }}
-
-      - name: Build release binary
-        run: cargo build --release --target ${{ matrix.target }} --verbose
-
-      - name: Prepare binary artifact
-        shell: bash
-        run: |
-          cp "target/${{ matrix.target }}/release/magic-motion.exe" "${{ matrix.binary_name }}"
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.binary_name }}
-          path: ${{ matrix.binary_name }}
-
-      - name: Attach to GitHub Release
-        if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'release'
-        uses: softprops/action-gh-release@v2
-        with:
-          files: ${{ matrix.binary_name }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Check build
+        run: cargo build --verbose
