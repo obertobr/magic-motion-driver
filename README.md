@@ -196,6 +196,15 @@ cargo test
 
 Contributions, bug reports, and feature requests are welcome! Please read [**`CONTRIBUTING.md`**](CONTRIBUTING.md) for development guidelines.
 
+## How was AI used in this project?
+
+This project was developed with assistance from Gemini AI through Google Antigravity.
+
+- **Protocol analysis & math**: Assisted in inspecting raw serial bytes from the RF receiver, deriving the checksum calculation, and formulating the 3D DCM filter and gravity roll compensation.
+- **Code structure**: Assisted with scaffolding the hexagonal architecture in Rust and writing unit tests.
+- **Win32 input research**: Assisted in researching Win32 API behaviors, such as hardware scancodes and auto-repeat handling for games.
+- **Testing & validation**: All physical hardware tests, serial packet captures, and design decisions were made by the author.
+
 ## License
 
 Distributed under the **GNU General Public License v2.0 (GPL-2.0)**. See [**`LICENSE`**](LICENSE) for more information.
